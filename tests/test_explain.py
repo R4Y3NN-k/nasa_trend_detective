@@ -76,3 +76,21 @@ def test_server_scan_and_explain(monkeypatch):
     assert next(s for s in scan if s["var_id"] == "T2M")["tier"] == "significant"
     out = server.explain_case({**body, "var_id": "T2M", "question_id": "hotter"})
     assert out["summary"] and all(q["id"] != "hotter" for q in out["next"])
+
+
+def test_unsupported_agreement_or_cause_rejected(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    for text in ("Rising about 0.20 °C per decade. A second NASA dataset agrees.",
+                 "Rising about 0.20 °C per decade because of city growth."):
+        monkeypatch.setattr(ex, "_call_gemini", lambda p, k, t=text: json.dumps({"summary": t, "next": []}))
+        out = ex.explain(FACTS, QUESTIONS)
+        assert out["source"] == "template" and "claim" in out["why_template"], text
+
+
+def test_supported_agreement_and_closing_line_accepted(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    facts = {**FACTS, "cross_check": {"state": "agree", "headline": "Two NASA datasets agree", "detail": ""}}
+    monkeypatch.setattr(ex, "_call_gemini", lambda p, k: json.dumps(
+        {"summary": "Clearly warmer, about 0.20 °C per decade; a second NASA dataset agrees. "
+                    "This shows a change, not its cause.", "next": []}))
+    assert ex.explain(facts, QUESTIONS)["source"] == "gemini"
