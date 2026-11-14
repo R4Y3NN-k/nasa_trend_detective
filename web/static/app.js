@@ -45,6 +45,14 @@ const S = {
   result: null, error: null,
   tab: 'series', view: 'anomaly',
   capped: false,
+  pd: new Map(),              // key -> NASA POWER data for that cell: {status: 'queued'|'loading'|'ok'|'error', ...}
+};
+
+// Colour ramps for the real per-point means (light = low, dark = high).
+const RAMPS = {
+  T2M: [[253, 231, 212], [194, 65, 12]],
+  PRECTOTCORR: [[220, 232, 251], [29, 78, 216]],
+  GWETTOP: [[237, 227, 209], [4, 100, 96]],
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -103,20 +111,25 @@ function renderPoints() {
     do { cells = cellsIn(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), stride); stride++; } while (cells.length > 700);
     for (const [lat, lon] of cells) if (!show.has(keyOf(lat, lon))) show.set(keyOf(lat, lon), [lat, lon]);
   }
-  const resultPts = S.screen === 'verdict' && S.result ? new Map(S.result.points.map((p) => [keyOf(p.lat, p.lon), p])) : null;
+  const ramp = rampFor();
   for (const [key, [lat, lon]] of show) {
     const on = S.picked.has(key);
+    const d = S.pd.get(key);
     let style;
-    if (resultPts && resultPts.has(key) && !resultPts.get(key).land) {
-      style = { radius: 6, color: '#5A5B60', weight: 2, fillColor: '#FFFFFF', fillOpacity: 1, dashArray: '2 3' };
-    } else if (on) {
-      style = { radius: 7, color: '#FFFFFF', weight: 2.5, fillColor: '#046460', fillOpacity: 1 };
-    } else {
+    if (!on) {
       style = { radius: 4, color: '#1B2A8C', weight: 1.5, fillColor: '#FFFFFF', fillOpacity: 1 };
+    } else if (d && d.status === 'ok' && !d.land) {
+      style = { radius: 6, color: '#5A5B60', weight: 2, fillColor: '#FFFFFF', fillOpacity: 1, dashArray: '2 3' };
+    } else if (d && d.status === 'ok') {
+      style = { radius: 8, color: '#FFFFFF', weight: 2, fillColor: ramp.color(d.means[ramp.var]), fillOpacity: 1 };
+    } else if (d && d.status === 'error') {
+      style = { radius: 6, color: '#B42318', weight: 2.5, fillColor: '#FFFFFF', fillOpacity: 1 };
+    } else {
+      style = { radius: 6, color: '#046460', weight: 2, fillColor: '#FFFFFF', fillOpacity: 1, dashArray: d && d.status === 'loading' ? '3 3' : null };
     }
-    const m = L.circleMarker([lat, lon], { ...style, interactive: S.mode === 'points' && S.screen === 'pick' });
-    const sea = resultPts && resultPts.has(key) && !resultPts.get(key).land;
-    m.bindTooltip(`${lat.toFixed(2)}°, ${lon.toFixed(2)}°${sea ? ' · sea, skipped' : ''}`, { direction: 'top' });
+    // Clickable for toggling in points mode; hoverable everywhere so people can read the real values.
+    const m = L.circleMarker([lat, lon], { ...style, interactive: on || (S.mode === 'points' && S.screen === 'pick') });
+    m.bindTooltip(on ? pointTooltip(lat, lon, d) : `${lat.toFixed(2)}°, ${lon.toFixed(2)}° · tap to add`, { direction: 'top' });
     m.on('click', () => {
       if (S.mode !== 'points' || S.screen !== 'pick') return;
       if (S.picked.has(key)) S.picked.delete(key);
@@ -181,8 +194,108 @@ function selectInside(poly) {
   selectionChanged();
 }
 
+// ---------------------------------------------------------------- real NASA POWER data per picked point
+const PD_WORKERS = 4;  // same politeness as td/fetch.py
+let pdQueue = [], pdActive = 0, pdFrame = 0;
+
+function queuePointData() {
+  for (const [key, ll] of S.picked) {
+    const d = S.pd.get(key);
+    if (!d || d.status === 'error') { S.pd.set(key, { status: 'queued' }); pdQueue.push([key, ll]); }
+  }
+  pumpPointData();
+}
+
+function pumpPointData() {
+  while (pdActive < PD_WORKERS && pdQueue.length) {
+    const [key, [lat, lon]] = pdQueue.shift();
+    if (!S.picked.has(key)) { S.pd.delete(key); continue; }   // deselected before its turn
+    pdActive++;
+    S.pd.set(key, { status: 'loading' });
+    api('/api/point', { lat, lon })
+      .then((d) => S.pd.set(key, { status: 'ok', ...d }))
+      .catch((err) => S.pd.set(key, { status: 'error', error: err.message }))
+      .finally(() => { pdActive--; pdChanged(); pumpPointData(); });
+  }
+  pdChanged();
+}
+
+function pdChanged() {
+  if (pdFrame) return;
+  pdFrame = requestAnimationFrame(() => { pdFrame = 0; renderPoints(); renderPdStatus(); });
+}
+
+function pdCounts() {
+  const c = { total: S.picked.size, ok: 0, land: 0, sea: 0, error: 0, pending: 0 };
+  for (const key of S.picked.keys()) {
+    const d = S.pd.get(key);
+    if (!d || d.status === 'queued' || d.status === 'loading') c.pending++;
+    else if (d.status === 'error') c.error++;
+    else { c.ok++; if (d.land) c.land++; else c.sea++; }
+  }
+  return c;
+}
+
+function rampFor() {
+  const vid = chosenVars().primary || 'T2M';
+  const [lo, hi] = RAMPS[vid] || RAMPS.T2M;
+  const vals = [...S.picked.keys()].map((k) => S.pd.get(k)).filter((d) => d && d.status === 'ok' && d.land)
+    .map((d) => d.means[vid]).filter((v) => v !== null && v !== undefined);
+  const min = vals.length ? Math.min(...vals) : 0, max = vals.length ? Math.max(...vals) : 1;
+  return {
+    var: vid, min, max, n: vals.length, lo, hi,
+    color: (v) => (v === null || v === undefined ? '#9A9B9F' : mix(lo, hi, max > min ? (v - min) / (max - min) : 0.6)),
+  };
+}
+
+function valueText(vid, v) {
+  const info = S.meta.variables[vid] || { name: vid, units: '', decimals: 2 };
+  return v === null || v === undefined ? '–' : `${Number(v).toFixed(info.decimals ?? 2)} ${info.units || ''}`.trim();
+}
+
+function pointTooltip(lat, lon, d) {
+  const head = `<strong>NASA POWER cell ${lat.toFixed(2)}°, ${lon.toFixed(2)}°</strong>`;
+  if (!d || d.status === 'queued') return `${head}<br>Waiting to load…`;
+  if (d.status === 'loading') return `${head}<br>Loading from NASA POWER…`;
+  if (d.status === 'error') return `${head}<br>Could not load: ${esc(d.error)}`;
+  if (!d.land) return `${head}<br>Sea (topsoil wetness saturated): skipped in the average`;
+  const rows = Object.keys(S.meta.variables).filter((v) => v in d.means)
+    .map((v) => `${esc(S.meta.variables[v].name)}: <strong>${esc(valueText(v, d.means[v]))}</strong>`).join('<br>');
+  return `${head} · land<br>${rows}<br><span style="color:#5A5B60">Mean ${d.first} to ${d.last} · ${d.months} months</span>`;
+}
+
+function renderPdStatus() {
+  const box = $('pd-status');
+  if (!box) return;
+  const c = pdCounts();
+  if (!c.total) { box.innerHTML = ''; return; }
+  const done = c.ok + c.error;
+  const ramp = rampFor();
+  const info = S.meta.variables[ramp.var] || { name: ramp.var };
+  const loading = c.pending > 0;
+  box.innerHTML = `
+    <div class="flex flex-col gap-2 px-3.5 py-3 border border-line rounded-lg">
+      <div class="flex items-center justify-between text-[13px]">
+        <span class="font-bold">NASA data in your area</span>
+        <span class="text-muted">${loading ? `${done} / ${c.total} loaded` : 'NASA POWER · MERRA-2'}</span>
+      </div>
+      ${loading ? `<div class="h-1.5 bg-land rounded-full overflow-hidden"><div class="h-full bg-teal transition-all" style="width:${Math.round(100 * done / c.total)}%"></div></div>` : ''}
+      <div class="flex flex-wrap gap-x-3 gap-y-1 text-[13px] text-charcoal">
+        <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-full bg-teal"></span>${c.land} land</span>
+        <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-full border-2 border-dashed border-muted"></span>${c.sea} sea, skipped</span>
+        ${c.error ? `<span class="flex items-center gap-1.5 text-[#B42318]"><span class="inline-block w-2.5 h-2.5 rounded-full border-2 border-[#B42318]"></span>${c.error} failed</span>` : ''}
+      </div>
+      ${ramp.n ? `<div class="flex flex-col gap-1">
+        <div class="h-2.5 rounded-full" style="background:linear-gradient(90deg, rgb(${ramp.lo.join(',')}), rgb(${ramp.hi.join(',')}))"></div>
+        <div class="flex justify-between text-[11px] text-muted"><span>${esc(valueText(ramp.var, ramp.min))}</span><span>${esc(info.name)}, mean ${S.meta.years[0]}–${S.meta.years[1]}</span><span>${esc(valueText(ramp.var, ramp.max))}</span></div>
+      </div>` : ''}
+      <span class="text-[12px] text-muted">Hover a point to see what NASA recorded there.</span>
+    </div>`;
+}
+
 let areaTimer = null;
 function selectionChanged() {
+  queuePointData();
   renderPoints();
   renderPanel();
   clearTimeout(areaTimer);
@@ -247,7 +360,8 @@ function renderPick() {
     <section class="flex flex-col gap-2.5">
       <div class="flex items-center justify-between"><h2 class="${H2}">Your area</h2><span class="text-xs text-muted">${S.mode === 'draw' ? 'Freehand area' : 'Picked points'}</span></div>
       <div class="flex items-baseline gap-2.5"><span class="text-[34px] font-extrabold leading-none">${n}</span><span class="text-[15px] text-charcoal">grid point${n === 1 ? '' : 's'} selected</span></div>
-      <p class="m-0 text-sm leading-snug text-charcoal">${n ? (S.capped ? 'Large area: the grid was thinned so at most ' + S.meta.max_points + ' points are fetched. ' : '') + 'Sea points are skipped; land points are averaged with cos(latitude) weights.' : 'Nothing picked yet. Draw around an area on the map, or switch to points.'}</p>
+      <p class="m-0 text-sm leading-snug text-charcoal">${n ? (S.capped ? 'Large area: every other NASA grid cell is used so at most ' + S.meta.max_points + ' points are fetched. ' : '') + 'Each dot is one NASA POWER grid cell; sea cells are skipped and land cells averaged with cos(latitude) weights.' : 'Nothing picked yet. Draw around an area on the map, or switch to points.'}</p>
+      <div id="pd-status"></div>
       <div class="flex flex-col gap-2 px-3.5 py-3 bg-land rounded-lg">
         <div class="flex items-center justify-between text-[13px] text-charcoal"><span>Years</span><span class="font-semibold text-ink">${y1 - y0 + 1} years</span></div>
         <div class="flex items-center gap-2 text-sm">
@@ -284,8 +398,10 @@ function renderPick() {
       </button>
     </div>`;
 
-  $('panel-body').querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => { S.question = b.dataset.q; S.variable = null; renderPanel(); }));
-  $('panel-body').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => { S.variable = b.dataset.v; renderPanel(); }));
+  renderPdStatus();
+  // Changing the question/variable recolours the dots by that variable's real values.
+  $('panel-body').querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => { S.question = b.dataset.q; S.variable = null; renderPanel(); renderPoints(); }));
+  $('panel-body').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => { S.variable = b.dataset.v; renderPanel(); renderPoints(); }));
   $('y0').addEventListener('change', (e) => { S.years[0] = +e.target.value; if (S.years[1] - S.years[0] + 1 < S.meta.min_years) S.years[1] = Math.min(last, S.years[0] + S.meta.min_years - 1); renderPanel(); });
   $('y1').addEventListener('change', (e) => { S.years[1] = +e.target.value; if (S.years[1] - S.years[0] + 1 < S.meta.min_years) S.years[0] = Math.max(first, S.years[1] - S.meta.min_years + 1); renderPanel(); });
   const go = $('go'); if (go && ready) go.addEventListener('click', investigate);
