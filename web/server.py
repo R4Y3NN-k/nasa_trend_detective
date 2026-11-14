@@ -477,6 +477,133 @@ def explain_case(body) -> dict:
     return out
 
 
+# ------------------------------------------------------------------ groups: points that change alike
+
+ZONE_COLORS = ["#046460", "#C2410C", "#1D4ED8", "#7C3AED", "#B7791F", "#BE185D"]
+THIRD_FEATURE = {"cold": "SNODP", "arid": "GWETTOP", "semi_arid": "GWETTOP", "tropical": "RH2M", "temperate": "GWETTOP"}
+MIN_GROUP_POINTS = 4
+
+
+def _axis_title(vid: str, pct: bool) -> str:
+    info = variables()[vid]
+    unit = "% per decade" if pct else f"{info['units']} per decade".strip()
+    if " to " in info["units"] and not pct:
+        unit = "per decade"
+    return f"{info['name']} trend ({unit})"
+
+
+def cluster_view(body) -> dict:
+    """Group the land points by how they change (td.trendmap.cluster_tree) for the map, a 2D and a 3D plot.
+
+    Descriptive only: points grouped because their trends look alike; significance stays with each verdict.
+    """
+    from td.trendmap import cluster_tree, position_word, trend_grid, trend_value
+
+    body = {**body, "var_id": body.get("var_id") or "T2M"}
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    if len(land) < MIN_GROUP_POINTS:
+        return {"ok": False, "reason": f"Pick at least {MIN_GROUP_POINTS} land points to group them "
+                                       f"(you have {len(land)})."}
+    climate = ranked_questions(pts, area_means(data)).get("climate") or {}
+    features = ["T2M", "PRECTOTCORR", THIRD_FEATURE.get(climate.get("type"), "GWETTOP")]
+    frames = {pt: df.reindex(months) for pt, df in land.items()}
+    grids = {v: trend_grid(frames, v) for v in features}
+    if any(g.empty for g in grids.values()):
+        return {"ok": False, "reason": "Not enough data at these points to compare their trends."}
+    tree = cluster_tree(grids, features=features, color_var="T2M")
+    if tree.empty:
+        return {"ok": False, "reason": "Not enough data at these points to compare their trends."}
+
+    zone_of = {}
+    for _, row in tree.sort_values("depth").iterrows():       # deeper zones overwrite their parents
+        if str(row["label"]).startswith("Zone "):
+            for m in row["members"]:
+                zone_of[(float(m[0]), float(m[1]))] = row["label"][5:]
+    raw_names = sorted(set(zone_of.values()))               # A1, A2, B ... (north first) -> A, B, C ...
+    rename = {r: chr(65 + i) for i, r in enumerate(raw_names)}
+    zone_of = {pt: rename[z] for pt, z in zone_of.items()}
+    names = [rename[r] for r in raw_names]
+    if len(names) < 2:
+        return {"ok": False, "reason": "All points change alike here, so there is only one group."}
+    color = {z: ZONE_COLORS[i % len(ZONE_COLORS)] for i, z in enumerate(names)}
+
+    vals, pct = {}, {}
+    for v, g in grids.items():
+        series, pct[v] = trend_value(g)
+        vals[v] = {(float(a), float(b)): float(x) for a, b, x in zip(g["lat"], g["lon"], series)}
+    sig = {(float(a), float(b)): bool(s) for a, b, s in zip(grids["T2M"]["lat"], grids["T2M"]["lon"],
+                                                            grids["T2M"]["significant"])}
+    common = [pt for pt in zone_of if all(pt in vals[v] for v in features)]
+    info = {v: variables()[v] for v in features}
+
+    def fmt(v, x):
+        x = 0.0 if abs(x) < 0.05 and pct[v] else x               # no "-0.0%"
+        if pct[v]:
+            return f"{x:+.1f}%"
+        u = info[v]["units"] if " to " not in info[v]["units"] else ""
+        return f"{x:+.{info[v].get('decimals', 2)}f} {u}".strip()
+
+    zones = []
+    for z in names:
+        members = [pt for pt in common if zone_of[pt] == z]
+        means = {v: float(np.mean([vals[v][pt] for pt in members])) for v in features}
+        zones.append({
+            "zone": z, "color": color[z], "points": len(members),
+            "where": position_word(members, common),
+            "significant": sum(sig.get(pt, False) for pt in members),
+            "means": {v: num(means[v]) for v in features},
+            "summary": " · ".join(f"{info[v]['name']} {fmt(v, means[v])}/decade" for v in features),
+        })
+
+    points = [{"lat": a, "lon": b, "zone": zone_of[(a, b)], "color": color[zone_of[(a, b)]],
+               "values": {v: num(vals[v][(a, b)]) for v in features}} for a, b in common]
+    return {
+        "ok": True, "features": [{"id": v, "name": info[v]["name"], "axis": _axis_title(v, pct[v])} for v in features],
+        "climate": climate, "zones": zones, "points": points,
+        "figure2d": group_figure(points, zones, features, pct, three_d=False),
+        "figure3d": group_figure(points, zones, features, pct, three_d=True),
+    }
+
+
+def group_figure(points, zones, features, pct, three_d: bool) -> dict:
+    import plotly.graph_objects as go
+
+    x, y, z = features
+    fig = go.Figure()
+    for zone in zones:
+        mem = [p for p in points if p["zone"] == zone["zone"]]
+        common_kw = dict(name=f"Group {zone['zone']} ({zone['points']})", mode="markers",
+                         customdata=[[p["lat"], p["lon"]] for p in mem],
+                         hovertemplate="%{customdata[0]:.2f}°, %{customdata[1]:.2f}°<extra>Group " + zone["zone"] + "</extra>")
+        if three_d:
+            fig.add_trace(go.Scatter3d(x=[p["values"][x] for p in mem], y=[p["values"][y] for p in mem],
+                                       z=[p["values"][z] for p in mem],
+                                       marker=dict(size=5, color=zone["color"], line=dict(width=0.5, color="#FFFFFF")),
+                                       **common_kw))
+        else:
+            fig.add_trace(go.Scatter(x=[p["values"][x] for p in mem], y=[p["values"][y] for p in mem],
+                                     marker=dict(size=11, color=zone["color"], line=dict(width=1.5, color="#FFFFFF")),
+                                     **common_kw))
+    titles = [_axis_title(v, pct[v]) for v in features]
+    if three_d:
+        fig.update_layout(template="plotly_white", scene=dict(
+            xaxis_title=titles[0], yaxis_title=titles[1], zaxis_title=titles[2],
+            xaxis=dict(title_font=dict(size=10)), yaxis=dict(title_font=dict(size=10)),
+            zaxis=dict(title_font=dict(size=10))))
+    else:
+        fig.add_hline(y=0, line=dict(color="#9A9B9F", width=1))
+        fig.add_vline(x=0, line=dict(color="#9A9B9F", width=1))
+        fig.update_layout(template="plotly_white", xaxis_title=titles[0], yaxis_title=titles[1])
+    out = figure_json(fig)
+    out["layout"]["showlegend"] = False                     # the group list above the plot is the legend
+    out["layout"]["height"] = 380 if three_d else 300
+    if not three_d:
+        out["layout"]["margin"] = dict(l=8, r=8, t=8, b=40)
+    if three_d:
+        out["layout"]["margin"] = dict(l=0, r=0, t=0, b=0)
+    return out
+
+
 # ------------------------------------------------------------------ highland vs lowland (jury remark, step 6)
 
 MIN_RELIEF_M = 500   # below this, the area is flat enough for one trend
@@ -619,6 +746,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(run_analysis(body))
             if self.path == "/api/crosscheck":
                 return self.send_json(cross_check(body))
+            if self.path == "/api/clusters":
+                return self.send_json(cluster_view(body))
             if self.path == "/api/climate":
                 return self.send_json(climate_from_means(body))
             if self.path == "/api/scan":

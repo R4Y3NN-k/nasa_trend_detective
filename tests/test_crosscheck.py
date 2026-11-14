@@ -90,3 +90,23 @@ def test_flat_area_says_one_trend_fits():
 
 def test_too_few_points_or_no_elevation_skips():
     assert server.elevation_split({(36.0, 10.0): _land(None, 0.3, 1)}, MONTHS, "T2M") is None
+
+
+# ---------------------------------------------------------------- groups (2D / 3D)
+
+def test_groups_split_points_that_change_differently(monkeypatch):
+    north = {(37.0 + 0.5 * i, 10.0): _land(100.0, 0.8, i) for i in range(4)}
+    south = {(33.0 + 0.5 * i, 10.0): _land(100.0, -0.2, 20 + i) for i in range(4)}
+    frames = {**north, **south}
+    monkeypatch.setattr(server, "fetch_points", lambda pts, y0, y1: {pt: frames[pt] for pt in pts})
+    out = server.cluster_view({"points": [list(p) for p in frames], "years": [1981, 2025]})
+    assert out["ok"] and len(out["zones"]) >= 2
+    assert {p["zone"] for p in out["points"] if p["lat"] >= 37} != {p["zone"] for p in out["points"] if p["lat"] < 37}
+    assert out["figure2d"]["data"] and out["figure3d"]["data"][0]["type"] == "scatter3d"
+    assert [f["id"] for f in out["features"]][:2] == ["T2M", "PRECTOTCORR"]
+
+
+def test_groups_need_four_land_points(monkeypatch):
+    monkeypatch.setattr(server, "fetch_points", lambda pts, y0, y1: {pt: _land(100.0, 0.3, 1) for pt in pts})
+    out = server.cluster_view({"points": [[36.0, 10.0], [36.5, 10.0]], "years": [1981, 2025]})
+    assert not out["ok"] and "at least 4" in out["reason"]

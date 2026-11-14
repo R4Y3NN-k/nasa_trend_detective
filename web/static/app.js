@@ -49,6 +49,7 @@ const S = {
   scan: null,                 // quick scan of every variable for the picked area: {sig, status, data}
   explain: null,              // plain words + next questions: {status, data}
   tab: 'series', view: 'anomaly',
+  groups: null, groupView: '2d', mapGroups: false,   // Groups tab: points that change alike
   capped: false,
   pd: new Map(),              // key -> NASA POWER data for that cell: {status: 'queued'|'loading'|'ok'|'error', ...}
 };
@@ -521,7 +522,7 @@ async function investigate() {
   renderPanel(); renderPoints();
   try {
     S.result = await api('/api/analyze', { points: [...S.picked.values()], var_id: primary, linked, why, years: S.years });
-    S.screen = 'verdict'; S.tab = 'series'; S.view = 'anomaly';
+    S.screen = 'verdict'; S.tab = 'series'; S.view = 'anomaly'; S.groups = null; S.mapGroups = false;
     drawZones();
     loadCrossCheck();
   } catch (err) {
@@ -596,6 +597,67 @@ function elevationCard() {
     <p class="m-0 text-[12px] text-muted">Your points range from ${E.range_m[0]} m to ${E.range_m[1]} m; split at ${E.cut_m} m (NASA POWER grid-cell elevation).</p></section>`;
 }
 
+// ---------------------------------------------------------------- groups: points that change alike
+async function loadGroups() {
+  const R = S.result;
+  S.groups = { status: 'loading' };
+  try {
+    const data = await api('/api/clusters', { points: [...S.picked.values()], years: R.years });
+    if (S.result === R) S.groups = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.groups = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R) renderPanel();
+}
+
+function groupsBody() {
+  const G = S.groups;
+  if (!G || G.status === 'loading') return '<p class="m-0 text-sm text-muted" role="status">Testing every point on three variables and grouping the ones that change alike…</p>';
+  if (G.status === 'error') return `<p class="m-0 text-sm text-charcoal">${esc(G.error)}</p>`;
+  const D = G.data;
+  if (!D.ok) return `<p class="m-0 text-sm text-charcoal leading-relaxed">${esc(D.reason)}</p>`;
+  const names = D.features.map((f) => f.name.toLowerCase());
+  const list = D.zones.map((z) => `<li class="flex gap-2.5 items-start"><span class="mt-1 flex-none w-3.5 h-3.5 rounded-full" style="background:${z.color}"></span>
+      <span class="text-[13px] leading-snug text-charcoal"><strong class="text-ink">Group ${esc(z.zone)}</strong> · ${esc(z.where)} · ${z.points} point${z.points === 1 ? '' : 's'}<br>${esc(z.summary)}</span></li>`).join('');
+  const views = [['2d', 'Flat view'], ['3d', '3D view (advanced)']].map(([id, label]) => `<button type="button" data-gview="${id}" aria-pressed="${S.groupView === id}"
+      class="min-h-[36px] px-3 rounded-full text-[13px] ${S.groupView === id ? 'border-2 border-teal bg-teal text-white' : 'border border-[#CCCCCC] bg-white'}">${label}</button>`).join('');
+  return `<div class="flex flex-col gap-3">
+    <p class="m-0 text-sm leading-relaxed text-charcoal">Each grid point was tested on its own for ${esc(names[0])}, ${esc(names[1])} and ${esc(names[2])}. Points whose trends look alike share a colour, on the map and below.</p>
+    <ul class="m-0 p-0 list-none flex flex-col gap-2">${list}</ul>
+    <div class="flex gap-1.5">${views}</div>
+    <div id="groups-chart" class="w-full"></div>
+    <p class="m-0 text-[12px] text-muted">${S.groupView === '3d' ? `Drag to turn the cube. Up: ${esc(D.features[2].name.toLowerCase())}.` : `Right = warming faster; up = ${esc(names[1])} rising. Hover a dot to find its square on the map.`} Groups describe the data; they are not a test (each point's significance is in the Zones tab).</p>
+  </div>`;
+}
+
+function syncGroupsOnMap() {
+  const want = S.screen === 'verdict' && S.tab === 'groups' && S.groups && S.groups.status === 'ok' && S.groups.data.ok;
+  if (want && !S.mapGroups) {
+    zonesLayer.clearLayers();
+    for (const p of S.groups.data.points) {
+      L.rectangle([[p.lat - DLAT / 2, p.lon - DLON / 2], [p.lat + DLAT / 2, p.lon + DLON / 2]],
+        { color: '#FFFFFF', weight: 1, fillColor: p.color, fillOpacity: 0.8 })
+        .bindTooltip(`Group ${p.zone} · ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`).addTo(zonesLayer);
+    }
+    const ps = S.groups.data.points;   // bring all coloured squares into view, clear of the side panel
+    map.fitBounds([[Math.min(...ps.map((p) => p.lat)) - DLAT, Math.min(...ps.map((p) => p.lon)) - DLON],
+      [Math.max(...ps.map((p) => p.lat)) + DLAT, Math.max(...ps.map((p) => p.lon)) + DLON]],
+    { paddingTopLeft: [70, 60], paddingBottomRight: [480, 60], maxZoom: 9 });
+    S.mapGroups = true;
+  } else if (!want && S.mapGroups) {
+    S.mapGroups = false;
+    drawZones();
+  }
+}
+
+let highlight = null;
+function highlightCell(ll) {
+  if (highlight) { highlight.remove(); highlight = null; }
+  if (!ll) return;
+  highlight = L.rectangle([[ll[0] - DLAT / 2, ll[1] - DLON / 2], [ll[0] + DLAT / 2, ll[1] + DLON / 2]],
+    { color: '#1F2024', weight: 3, fill: false, interactive: false }).addTo(map);
+}
+
 function crossCard() {
   const C = S.cross;
   const wrap = (cls, icon, title, body) => `<section aria-live="polite" class="flex flex-col gap-2 px-3.5 py-3 rounded-lg border ${cls}">
@@ -617,7 +679,7 @@ function crossCard() {
 }
 
 function backToPick() {
-  S.screen = 'pick'; S.result = null; S.cross = null; S.explain = null;
+  S.screen = 'pick'; S.result = null; S.cross = null; S.explain = null; S.groups = null; S.mapGroups = false;
   zonesLayer.clearLayers();
   if (lasso) lasso.addTo(map);
   renderPanel(); renderPoints();
@@ -692,7 +754,7 @@ function renderVerdict() {
   const chg = r.tier !== 'none' && total !== null
     ? `About ${fmt(total, d)} ${esc(u)} over the ${spanTxt} years since ${R.years[0]}${r.pct_decade !== null ? ` (${fmt(r.pct_decade, 1)}% of the average per decade)` : ''}. This shows a change, not its cause.`
     : esc(R.words.detail);
-  const tabs = [['series', 'Time series'], ['zones', 'Zones'], ['evidence', 'Evidence'], ['method', 'Method']].map(([id, label]) =>
+  const tabs = [['series', 'Time series'], ['zones', 'Zones'], ['groups', 'Groups'], ['evidence', 'Evidence'], ['method', 'Method']].map(([id, label]) =>
     `<button type="button" role="tab" data-tab="${id}" aria-selected="${S.tab === id}" class="min-h-[44px] px-3 -mb-px text-sm border-b-[3px] ${S.tab === id ? 'border-teal text-teal font-bold' : 'border-transparent text-charcoal hover:text-ink'}">${label}</button>`).join('');
 
   let tabBody = '';
@@ -712,6 +774,8 @@ function renderVerdict() {
           <p class="m-0">Each square on the map is one grid point, tested on its own. Orange rising, blue falling; a dot means it survives the correction for testing ${z.length} points at once (Benjamini-Hochberg, 10%).</p>
           <p class="m-0 px-3.5 py-2.5 bg-land rounded-lg">Significant: ${z.filter((x) => x.significant && x.slope_decade > 0).length} rising, ${z.filter((x) => x.significant && x.slope_decade < 0).length} falling, ${z.filter((x) => !x.significant).length} without a clear trend.</p></div>`
       : `<p class="m-0 text-sm text-charcoal leading-relaxed">${R.points_used < 2 ? 'Pick at least two land points to compare zones.' : 'The per-point zone map arrives with step 5 (trend_grid). Until then the map shows which picked points were land and which were sea.'}</p>`;
+  } else if (S.tab === 'groups') {
+    tabBody = groupsBody();
   } else if (S.tab === 'evidence') {
     const L_ = R.link;
     tabBody = `<div class="flex flex-col gap-3 text-sm leading-relaxed text-charcoal">
@@ -766,7 +830,8 @@ function renderVerdict() {
     </div>
     <p class="mt-2 mb-0 text-[11px] text-muted">SI-assisted: parts of this app were drafted with Claude (Anthropic) and reviewed by the team.</p>`;
 
-  $('panel-body').querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { S.tab = b.dataset.tab; renderPanel(); }));
+  $('panel-body').querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { S.tab = b.dataset.tab; if (S.tab === 'groups' && !S.groups) loadGroups(); renderPanel(); }));
+  $('panel-body').querySelectorAll('[data-gview]').forEach((b) => b.addEventListener('click', () => { S.groupView = b.dataset.gview; renderPanel(); }));
   $('panel-body').querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { S.view = b.dataset.view; renderPanel(); }));
   $('panel-body').querySelectorAll('[data-back]').forEach((b) => b.addEventListener('click', backToPick));
   $('panel-body').querySelectorAll('[data-next]').forEach((b) => b.addEventListener('click', () => {
@@ -778,6 +843,14 @@ function renderVerdict() {
   if (S.tab === 'series') {
     const fig = R.figures[S.view];
     Plotly.react('chart', fig.data, { ...fig.layout, autosize: true }, { displayModeBar: false, responsive: true });
+  }
+  syncGroupsOnMap();
+  if (S.tab === 'groups' && S.groups && S.groups.status === 'ok' && S.groups.data.ok && $('groups-chart')) {
+    const gf = S.groups.data[S.groupView === '3d' ? 'figure3d' : 'figure2d'];
+    Plotly.react('groups-chart', gf.data, { ...gf.layout, autosize: true }, { displayModeBar: S.groupView === '3d', displaylogo: false, responsive: true });
+    const gc = $('groups-chart');
+    gc.on('plotly_hover', (ev) => highlightCell(ev.points[0].customdata));
+    gc.on('plotly_unhover', () => highlightCell(null));
   }
   if (S.cross && S.cross.status === 'ok' && S.cross.data.figure && $('cross-chart')) {
     const cf = S.cross.data.figure;
