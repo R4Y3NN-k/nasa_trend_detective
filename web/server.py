@@ -18,6 +18,7 @@ API
                                        Giovanni) over the shared years, and whether the two agree
     POST /api/scan       {points, years}
                                        every variable tested on the area (drives the suggested questions)
+    POST /api/seasons    {points, var_id, years}   the same tests per season (DJF, MAM, JJA, SON)
     POST /api/explain    {points, var_id, question_id, years, cross}
                                        plain-language summary + next questions (Gemini or a template;
                                        only numbers the app computed are allowed)
@@ -642,6 +643,68 @@ def elevation_split(land: dict, months, var_id: str) -> dict | None:
             "high": group(res_h, len(high), mean_h, high), "low": group(res_l, len(low), mean_l, low)}
 
 
+# ------------------------------------------------------------------ decades and seasons (UI pass)
+
+def decade_means(anom: pd.Series) -> list[dict]:
+    """Mean monthly anomaly per calendar decade (1980s, 1990s, ...): the bars of the simple chart.
+
+    Decades with under 24 months of data are left out (a 2-month "decade" would mislead)."""
+    a = anom.dropna()
+    out = []
+    for dec, part in a.groupby((a.index.year // 10) * 10):
+        if len(part) < 24:
+            continue
+        out.append({"decade": f"{int(dec)}s", "first_year": int(part.index.year.min()),
+                    "last_year": int(part.index.year.max()), "months": int(len(part)), "mean": num(part.mean())})
+    return out
+
+
+SEASONS = [("DJF", (12, 1, 2)), ("MAM", (3, 4, 5)), ("JJA", (6, 7, 8)), ("SON", (9, 10, 11))]
+SEASON_NAMES = {True: {"DJF": "Winter", "MAM": "Spring", "JJA": "Summer", "SON": "Autumn"},      # northern
+                False: {"DJF": "Summer", "MAM": "Autumn", "JJA": "Winter", "SON": "Spring"}}     # southern
+
+
+def season_sentence(rows: list[dict], name: str, units: str, dec: int) -> str:
+    """One careful sentence: a season is only called faster when its 95% range clears another's."""
+    ok = [r for r in rows if r.get("slope_decade") is not None]
+    clear = [r for r in ok if r["tier"] == "significant"]
+    if len(ok) < 2:
+        return "Too few months per season to compare the seasons."
+    if not clear:
+        return "No single season shows a clear trend on its own."
+    top = max(clear, key=lambda r: abs(r["slope_decade"]))
+    others = [r for r in ok if r is not top]
+    low = min(others, key=lambda r: abs(r["slope_decade"]))
+    apart = top["ci_decade"][0] > low["ci_decade"][1] or top["ci_decade"][1] < low["ci_decade"][0]
+    word = "rising" if top["slope_decade"] > 0 else "falling"
+    rate = f"{top['slope_decade']:+.{dec}f} {units}".strip()
+    if apart:
+        return (f"{top['label']} is changing fastest: {name.lower()} {word} {rate} per decade, "
+                f"clearly more than in {low['label'].lower()} ({low['slope_decade']:+.{dec}f}).")
+    return (f"{top['label']} shows the largest change ({rate} per decade), but the seasons' 95% ranges overlap, "
+            f"so it is not clearly faster than the others.")
+
+
+def seasonal_trends(body) -> dict:
+    """The same tests, season by season (months of one season only), on the area mean."""
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    info = variables()[var_id]
+    series = data[var_id]
+    north = sum(lat for lat, _ in land) / len(land) >= 0
+    rows = []
+    for sid, ms in SEASONS:
+        row = {"id": sid, "label": SEASON_NAMES[north][sid], "months": list(ms)}
+        try:
+            r = analyze(series[series.index.month.isin(ms)], var_id)
+            row.update(slope_decade=num(r["slope_decade"]), ci_decade=num(r["ci_decade"]), tier=r["tier"],
+                       p_ttest=num(r["p_ttest"]), p_mk=num(r["p_mk"]), n_months=int(r["n_months"]))
+        except ValueError:
+            row.update(slope_decade=None, ci_decade=None, tier="none", p_ttest=None, p_mk=None, n_months=0)
+        rows.append(row)
+    return {"var_id": var_id, "years": [y0, y1], "hemisphere": "north" if north else "south", "seasons": rows,
+            "sentence": season_sentence(rows, info.get("name", var_id), info.get("units", ""), int(info.get("decimals", 2)))}
+
+
 def run_analysis(body) -> dict:
     pts, land, data, var_id, y0, y1, months = area_data(body)
     vars_ = variables()
@@ -680,6 +743,9 @@ def run_analysis(body) -> dict:
         "link": link,
         "zones": zones,
         "elevation": elevation_split(land, months, var_id),
+        "has_second_source": bool(second_source_for(var_id)),
+        "decades": decade_means(res["_anomalies"]),
+        "annual": (lambda a: {"year": [int(y) for y in a.index], "value": [num(v) for v in a]})(annual_anomalies(series)),
         "figures": {"anomaly": figure_json(trend_figure(series, res, view="anomaly")),
                     "raw": figure_json(trend_figure(series, res, view="raw"))},
         "series": {"month": [d.strftime("%Y-%m") for d in series.index], "value": [num(v) for v in series]},
@@ -726,13 +792,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/meta":
             return self.send_json({"years": [config.FIRST_YEAR, config.LAST_YEAR], "max_points": MAX_POINTS,
                                    "min_years": MIN_YEARS, "variables": variables()})
+        if path == "/docs/validation.md":
+            return self.send_file(ROOT / "docs" / "validation.md", "text/plain; charset=utf-8")
         if path == "/vendor/plotly.min.js":
             return self.send_file(PLOTLY_JS, "text/javascript; charset=utf-8")
         name = "index.html" if path in ("/", "") else path.lstrip("/")
         target = (STATIC / name).resolve()
         if STATIC.resolve() not in target.parents or not target.is_file():
             return self.send_json({"error": "Not found"}, 404)
-        types = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css"}
+        types = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                 ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml"}
         return self.send_file(target, types.get(target.suffix, "application/octet-stream"))
 
     def do_POST(self):
@@ -752,6 +821,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(climate_from_means(body))
             if self.path == "/api/scan":
                 return self.send_json(quick_scan(body))
+            if self.path == "/api/seasons":
+                return self.send_json(seasonal_trends(body))
             if self.path == "/api/explain":
                 return self.send_json(explain_case(body))
             return self.send_json({"error": "Not found"}, 404)
