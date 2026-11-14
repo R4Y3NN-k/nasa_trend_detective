@@ -1,13 +1,13 @@
-# Trend Detective: step-by-step build plan
+# Trend Detective: build plan
 
-Repo R4Y3NN-k/nasa_trend_detective · NASA Space Apps 2026 · Sat 14 Nov 16:30 to Sun 15 Nov 23:00 · deployment (Docker, Cloud Run) is out of scope for now
+Repo R4Y3NN-k/nasa_trend_detective · NASA Space Apps 2026 · Sat 14 Nov 16:45 to Sun 15 Nov 23:00 · the team writes all code from an empty repo · deployment (Docker, Cloud Run) is out of scope for now
 
 ## Who owns what
 
 | | Person | Role | Owns (only they edit these) | Branches | Also |
 | --- | --- | --- | --- | --- | --- |
-| A | **R4Y3NN-k** | Data | `td/fetch.py, td/cache.py, td/giovanni.py, td/appeears.py, scripts/` | `feat/data-*` | Repo owner: reviews and merges every pull request |
-| B | **[teammate 3]** | Stats | `td/analyze.py, td/trendmap.py, tests/` | `feat/stats-*` | Reviews any change to analyze() outputs |
+| A | **R4Y3NN-k** | Data | `td/fetch.py, td/cache.py, td/giovanni.py, td/appeears.py, scripts/, requirements*.txt, .gitignore` | `feat/data-*` | Repo owner: creates the skeleton, reviews and merges every pull request |
+| B | **[teammate 3]** | Stats | `td/analyze.py, td/trendmap.py, td/sample.py, tests/` | `feat/stats-*` | Reviews any change to analyze() outputs |
 | C | **yahya0X** | Dashboard | `app.py, td/charts.py, .streamlit/` | `feat/ui-*` | Only person who edits app.py |
 | D | **[teammate 4]** | Content and story | `td/config.py, td/report.py, README.md, docs/` | `feat/content-*` | Only person who edits config.py |
 
@@ -20,21 +20,152 @@ Repo R4Y3NN-k/nasa_trend_detective · NASA Space Apps 2026 · Sat 14 Nov 16:30 t
 
 | Objective | How the app meets it |
 | --- | --- |
-| 1. Variables | Questions name their variables; a card per variable (definition, source, units, record, why chosen, caveat); Explore any variable |
-| 2. Region | Presets, governorates, a drawn box; land points averaged with cos(latitude) weights; zone map per grid point |
-| 3. Time series | 1981–2025 monthly, raw or anomalies, trend line and 95% band, record length shown |
-| 4. Statistics | OLS slope per decade with 95% CI and t-test (Newey-West), Mann-Kendall (Hamed-Rao) and Sen's slope, FDR across zones, verdict tiers, years to significance |
+| 1. Variables | Questions name their variables; a card per variable (definition, source, units, record, why chosen, caveat); Explore any variable (steps 3, 4) |
+| 2. Region | Presets, governorates, a drawn box; land points averaged with cos(latitude) weights; zone map per grid point (steps 1, 5) |
+| 3. Time series | 1981–2025 monthly, raw or anomalies, trend line and 95% band, record length shown (step 3) |
+| 4. Statistics | OLS slope per decade with 95% CI and t-test (Newey-West), Mann-Kendall (Hamed-Rao) and Sen's slope, FDR across zones, verdict tiers, years to significance (steps 2, 5) |
 
 Judging criteria: Impact, Creativity, Validity, Relevance, Presentation.
 
+## Architecture
+
+Data flows top to bottom; each box is one owner's file.
+
+```text
+User ──▶ app.py (Streamlit, 3 screens)                                  [C]
+            │  screen 1: region (preset / drawn box) + years
+            │  screen 2: question or variable      ◀── td/config.py      [D]
+            │  screen 3: verdict, chart, map, cards, report
+            ▼
+      td/fetch.py  fetch_box(box, y0, y1) -> BoxData                    [A]
+            │  grid of points ─▶ NASA POWER monthly point API
+            │  land mask (GWETTOP) ─▶ cos(lat)-weighted average
+            │  td/cache.py: every API answer saved as JSON              [A]
+            │  td/giovanni.py, td/appeears.py: extra sources            [A]
+            ▼
+      td/analyze.py  analyze(series, var_id) -> dict                    [B]
+            │  anomalies ─▶ OLS + Newey-West (t-test, 95% CI)
+            │  Mann-Kendall (Hamed-Rao) + Sen ─▶ tier, years-to-sig
+      td/trendmap.py trend_grid(point_data, var_id) -> DataFrame        [B]
+            │  analyze() per grid point ─▶ Benjamini-Hochberg FDR
+            ▼
+      td/charts.py (Plotly figures) [C]   td/report.py (Markdown, CSV) [D]
+```
+
+## Repository structure
+
+Step 0 creates all of this, empty, in one commit. The last column is the owner.
+
+```text
+nasa_trend_detective/
+├── CLAUDE.md, PLAN.md             team rules and this plan
+├── README.md                      install, run, method, SI use              D
+├── requirements.txt               pinned runtime libraries                   A
+├── requirements-dev.txt           -r requirements.txt + pytest               A
+├── .gitignore, .env.example       ignore .venv, data/cache/*.json, .env      A
+├── pytest.ini                     pythonpath = . ; testpaths = tests         A
+├── .streamlit/config.toml         theme, headless                            C
+├── app.py                         the 3 screens                              C
+├── td/
+│   ├── __init__.py                                                           A
+│   ├── config.py                  VARIABLES, REGIONS, QUESTIONS, rules       D
+│   ├── cache.py                   get/put JSON by key                        A
+│   ├── fetch.py                   POWER client, grid, land mask, average     A
+│   ├── giovanni.py                GPM IMERG via Giovanni (step 7)            A
+│   ├── appeears.py                MODIS NDVI via AppEEARS (step 8)           A
+│   ├── analyze.py                 stats engine + verdict words               B
+│   ├── trendmap.py                per-point trends + FDR (step 5)            B
+│   ├── sample.py                  synthetic data so C and D never wait       B
+│   ├── charts.py                  Plotly figures                             C
+│   └── report.py                  case report (Markdown) + CSV               D
+├── scripts/prefetch_demo.py       warm the cache, print verdicts             A
+├── tests/                         test_fetch, test_analyze, test_app         B (A adds test_fetch)
+├── data/cache/                    cached API answers (gitignored)
+└── docs/                          validation.md, demo_stories.md, appeears_tasks.md   D
+```
+
+## Tech stack
+
+| Layer | Tool | Why |
+| --- | --- | --- |
+| Language | Python 3.12 | One language for the whole team |
+| App and UI | streamlit | Three screens in pure Python, no HTML or JS |
+| Map picker | folium + streamlit-folium | Preview a preset box; draw a rectangle (Draw plugin, rectangle only) |
+| Charts and zone map | plotly | Interactive time series; scattergeo zone map |
+| HTTP | requests | NASA POWER calls with timeout and retries |
+| Tables | pandas, numpy | Monthly series, weighted averages |
+| Statistics | statsmodels | OLS with Newey-West (HAC) errors; multipletests(method='fdr_bh') |
+| Statistics | pymannkendall | hamed_rao_modification_test: p-value and Sen's slope |
+| Second source | earthaccess, harmony-py | Earthdata Login and Giovanni area-averaged series (step 7) |
+| Tests | pytest + streamlit.testing.v1.AppTest | Known-trend tests and a full click-through without network |
+| Parallel fetch | concurrent.futures.ThreadPoolExecutor (stdlib) | 4 points at a time, gentle on POWER |
+
+Pin exact versions in requirements.txt once step 0 installs cleanly (`pip freeze`).
+
+## Contracts
+
+Fixed signatures. Everyone codes against these from minute one.
+
+```python
+# td/fetch.py  (A)
+@dataclass
+class BoxData:
+    data: pd.DataFrame        # index: month start (DatetimeIndex); columns: variable ids ("T2M", ...)
+    points_total: int         # grid points requested
+    points_used: int          # land points averaged
+    points: list              # [(lat, lon, is_land)]
+    point_data: dict          # {(lat, lon): DataFrame like .data}, land points only
+class FetchError(RuntimeError): ...            # message safe to show users
+def fetch_box(box, start_year, end_year) -> BoxData       # box = (west, south, east, north)
+def grid_points(box) -> list[tuple[float, float]]
+
+# td/cache.py  (A)
+def make_key(*parts) -> str ; def get(key) -> dict | None ; def put(key, data) -> None
+
+# td/analyze.py  (B)
+def anomalies(series) -> pd.Series
+def analyze(series, var_id) -> dict   # keys: var_id, start, end, n_months, missing_months, span_years, mean,
+    # slope_decade, ci_decade (lo, hi), p_ttest, p_mk, sen_decade, tier ("significant"|"suggestive"|"none"),
+    # tests_agree, total_change, pct_decade (None unless relative), years_to_significance, short_record,
+    # _anomalies, _trend_line (Series for charts)
+def verdict(res) -> {"headline": str, "detail": str}
+def correlate(a, b) -> {"r": float | None, "n": int}
+def compare(sub_res, whole_res, sub_name, whole_name) -> str          # step 6
+def agreement(res_a, res_b) -> "agree" | "disagree" | "single"        # step 7
+
+# td/trendmap.py  (B)
+def trend_grid(point_data, var_id, fdr_alpha=0.10) -> pd.DataFrame
+    # columns: lat, lon, slope_decade, pct_decade, p_ttest, p_mk, q_fdr, significant
+
+# td/sample.py  (B) — fake data for building before real data exists
+def sample_series(var_id="T2M", slope_decade=0.3, years=45, seed=0) -> pd.Series
+def sample_box_data(box) -> BoxData
+
+# td/charts.py  (C)
+def trend_figure(series, res, view="anomaly"|"raw") -> go.Figure
+def trend_map_figure(grid_df, var_id) -> go.Figure                    # step 5
+def box_figure(points, box) -> go.Figure
+
+# td/config.py  (D)
+VARIABLES[id] = {name, short, definition, source, power_param, units, record, relative, decimals, why, caveat,
+                 fetcher ("power"|"giovanni"|"appeears"), cross_check (optional)}
+REGIONS[id]   = {name, box, type ("arid"|"savanna"|"temperate"|"polar"), blurb, parent (optional)}
+QUESTIONS[id] = {label, icon, primary, linked: {region_type: var_id, "default": var_id}, why_linked: {...}}
+def classify_box(box) -> region type ; def linked_for(question_id, region_type) -> (var_id, why)
+FIRST_YEAR = 1981 ; LAST_YEAR = 2025 ; MIN_SPACING_DEG = 0.5 ; MAX_POINTS = 30
+
+# td/report.py  (D)
+def markdown_report(case, res, words, linked=None) -> str ; def csv_bytes(series, res) -> bytes
+```
+
 ## Rules so nobody overlaps
 
-1. Each file has exactly one owner (table above). Need a change in someone else's file? Ask in the team chat; they make it.
-2. New features go in new files that already exist as stubs (td/trendmap.py, td/giovanni.py, td/appeears.py), so nobody creates the same file twice.
-3. Never push to main. Branch, push, open a pull request; R4Y3NN-k merges after `python -m pytest -q` passes.
-4. Pull main before starting each step: `git checkout main && git pull && git checkout -b feat/<area>-<step>`.
-5. Function signatures in the Contracts column are fixed. Code against them even before the other side is finished.
-6. Feature freeze Sunday 18:00. After that, bug fixes only.
+1. Each file has exactly one owner (table above). Need a change in someone else's file? Ask in the team chat or open an issue; the owner makes it.
+2. Step 0 creates every file with its function signatures (bodies raise NotImplementedError). After that nobody creates a shared file, and everyone codes against the contracts.
+3. Build against td/sample.py until real code lands: C and D never wait for A or B.
+4. Never push to main. Pull main, branch feat/<area>-<step>, push, open a pull request; R4Y3NN-k merges after `python -m pytest -q` passes.
+5. Contract signatures and dict keys are fixed. Changing one needs the agreement of everyone who uses it, in the chat, before the PR.
+6. Gates: MVP on real data Sat 21:00; feature freeze Sun 18:00 (bug fixes only after); submit by Sun 23:00.
 
 ## Setup (everyone)
 
@@ -42,247 +173,211 @@ Judging criteria: Impact, Creativity, Validity, Relevance, Presentation.
 git clone https://github.com/R4Y3NN-k/nasa_trend_detective.git
 cd nasa_trend_detective
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
-python -m pytest -q                                 # 21 tests, offline
-streamlit run app.py
+pip install -r requirements-dev.txt                 # after step 0 is merged
+git checkout -b feat/<area>-<step>
 ```
 
-## Steps
+## Steps at a glance
 
 | Step | When | Who | Goal |
 | --- | --- | --- | --- |
-| 0. Bootstrap the repo | Sat 16:30–17:00 | A | Everyone starts from the same working code. |
-| 1. Real data in | Sat 17:00–18:30 | A, D | The app shows real NASA verdicts for the 5 presets. |
-| 2. Check the numbers | Sat 18:30–20:00 | B | Every number on screen is right before anything is built on it. |
-| 3. Dashboard on real data | Sat 18:30–20:00 | C | A first-time user reaches a verdict in two clicks. |
-| 4. Words and demo cases | Sat 18:30–20:00 | D | Every variable and region explains itself; demo stories picked from real results. |
-| G1. GATE: MVP on real data | Sat 20:00 | All | Merge steps 1–4. The Tunisia flow runs end to end on real data on every laptop. |
-| 5. Opposite-trends map | Sat 20:00–23:00 | B, C | One map shows where a variable rises and where it falls inside the region (the challenge's key idea). |
-| 6. Region-versus-region sentence | Sat 20:00–23:00 | B, C, D | Say whether a sub-region changes faster than its parent region. |
-| 7. Second NASA source for rain | Sat 21:00 – Sun 12:00 | A, B, D, C | Rain verdicts say "two sources agree", "sources disagree" or "single source only". |
-| 8. NDVI (optional) | Sun 09:00–13:00 | A, D, C | Add "Is the land greening or browning?" if D's AppEEARS jobs finished. |
-| 9. Validation and polish | Sun 09:00–18:00 | All | Show judges the method matches NASA's own tools. |
+| 0. Skeleton and contracts | Sat 16:45–17:30 | A (with all) | One commit that creates every folder and file, with signatures only, so four people can start without touching each other's files. |
+| 1. Data layer on NASA POWER | Sat 17:30–20:00 | A | fetch_box() returns real, area-averaged monthly series for any land box. |
+| 2. Stats engine | Sat 17:30–20:00 | B | analyze() turns any monthly series into a defensible verdict. |
+| 3. Dashboard | Sat 17:30–20:30 | C | Three screens that reach a verdict in two clicks, built on sample data, then switched to real data. |
+| 4. Content: catalog, regions, report | Sat 17:30–20:00 | D | Every variable, region and question explains itself in plain words. |
+| G1. GATE: MVP on real data | Sat 21:00 | All | Merge steps 1–4; the Tunisia flow runs end to end on real NASA data on every laptop. This meets all four challenge objectives. |
+| 5. Opposite-trends zone map | Sat 21:00 – Sun 00:00 | B, C | One map shows where a variable rises and where it falls inside the region: the challenge's key insight. |
+| 6. Region-versus-region sentence | Sat 21:00 – Sun 00:00 | B, C, D | Say whether a sub-region changes faster than its parent region. |
+| 7. Second NASA source for rain | Sat 22:00 – Sun 12:00 | A, B, D, C | Rain verdicts say "two sources agree", "sources disagree, treat with caution" or "single source only". |
+| 8. NDVI greenness (optional) | Sun 09:00–13:00 | A, D | Add "Is the land greening or browning?" if the AppEEARS jobs finished. |
+| 9. Validation, polish, SI disclosure | Sun 09:00–18:00 | All | Show the method matches NASA's own tools, and mark all SI-assisted work. |
 | G2. GATE: feature freeze | Sun 18:00 | All | Only bug fixes after this point. |
 | 10. Story and submission | Sun 18:00–23:00 | D, C, B | A clear demo and a complete submission before 23:00 (deadline 23:59). |
 
-### Step 0: Bootstrap the repo
+### Step 0: Skeleton and contracts
 
-**Sat 16:30–17:00 · A.** Everyone starts from the same working code.
+**Sat 16:45–17:30 · A (with all).** One commit that creates every folder and file, with signatures only, so four people can start without touching each other's files.
 
-- [ ] **A** (R4Y3NN-k): Unzip trend-detective.zip into the repo, commit as "Initial MVP", push to main.
-- [ ] **A** (R4Y3NN-k): Protect main (Settings → Branches → require a pull request).
-- [ ] **B C D** ([teammate 3], yahya0X, [teammate 4]): Clone, run the setup commands, confirm 21 tests pass and the app opens.
+- [ ] **A** (R4Y3NN-k): Create the tree above. Every module gets its docstring and the function signatures from the Contracts section, bodies `raise NotImplementedError`.
+- [ ] **A** (R4Y3NN-k): Add requirements.txt (streamlit, streamlit-folium, folium, plotly, pandas, numpy, scipy, statsmodels, pymannkendall, requests), requirements-dev.txt, .gitignore (.venv, __pycache__, data/cache/*.json, .env), .env.example, pytest.ini, CLAUDE.md, PLAN.md.
+- [ ] **All** (All): 15-minute call: read the Contracts together and agree on them. Then everyone clones, installs and branches.
 
-Contracts:
+Contracts: All of them (see Contracts)
 
-```python
-None yet
-```
+Tech stack: Git, GitHub, Python 3.12, venv, pip
 
-Tech stack: Git, GitHub, Python 3.12, venv
+Resources: This plan · CLAUDE.md
 
-Resources: README.md, CLAUDE.md in the repo
+Done when: main has the skeleton; `pip install -r requirements-dev.txt` works on all four laptops.
 
-Done when: All four laptops run the app and the tests.
+### Step 1: Data layer on NASA POWER
 
-### Step 1: Real data in
+**Sat 17:30–20:00 · A.** fetch_box() returns real, area-averaged monthly series for any land box.
 
-**Sat 17:00–18:30 · A, D.** The app shows real NASA verdicts for the 5 presets.
+- [ ] **A** (R4Y3NN-k): cache.py: key = sha1 of the request parts; read/write data/cache/<key>.json.
+- [ ] **A** (R4Y3NN-k): fetch.py grid_points(): cell centres starting at 0.5° spacing, widening ×1.25 until at most 30 points (Tunisia ≈ 28).
+- [ ] **A** (R4Y3NN-k): fetch.py one request per point: GET power.larc.nasa.gov/api/temporal/monthly/point with parameters=T2M,PRECTOTCORR,GWETTOP, community=AG, latitude, longitude, start=1981, end=2025, format=JSON; timeout 90 s, 3 retries, back off on HTTP 429; cache every answer.
+- [ ] **A** (R4Y3NN-k): Parse properties.parameter.<NAME>: keys YYYYMM; skip month 13 (the annual value); fill value −999 → NaN.
+- [ ] **A** (R4Y3NN-k): Land mask: a point whose GWETTOP is all missing is sea; skip it. Average land points month by month with cos(latitude) weights. Keep each land point's DataFrame in point_data. No land → FetchError with a clear message.
+- [ ] **A** (R4Y3NN-k): 4 points in parallel (ThreadPoolExecutor). scripts/prefetch_demo.py: fetch every preset and print each variable's verdict. tests/test_fetch.py with a fake response in POWER's JSON shape (no network).
 
-- [ ] **A** (R4Y3NN-k): Run `python scripts/prefetch_demo.py` for all presets; note land points used and missing months; post the printed verdicts in the chat.
-- [ ] **A** (R4Y3NN-k): Zip `data/cache/` and share it (it's gitignored) so B and C work on real data.
-- [ ] **D** ([teammate 4]): Submit AppEEARS MODIS NDVI area jobs now for Tunisia, Nile Delta, Western Sahel (they queue for hours). Save the task IDs in docs/appeears_tasks.md.
+Contracts: fetch_box, grid_points, BoxData, FetchError; cache.get/put/make_key
 
-Contracts:
+Tech stack: requests, pandas, numpy, concurrent.futures
 
-```python
-fetch_box(box, start_year, end_year) -> BoxData  (now also .point_data per land point)
-```
+Resources: NASA POWER API docs · POWER data sources page (MERRA-2 ½° × ⅝°)
 
-Tech stack: requests, pandas, NASA POWER monthly point API (T2M, PRECTOTCORR, GWETTOP)
+Done when: prefetch_demo.py prints real verdicts for Tunisia; data/cache shared with the team (zip it, it's gitignored).
 
-Resources: power.larc.nasa.gov/api/temporal/monthly/point · appeears.earthdatacloud.nasa.gov (Earthdata Login)
+### Step 2: Stats engine
 
-Done when: Cache shared; real verdicts in the chat by 18:30.
+**Sat 17:30–20:00 · B.** analyze() turns any monthly series into a defensible verdict.
 
-### Step 2: Check the numbers
+- [ ] **B** ([teammate 3]): sample.py first (by 18:00, so C can build): sample_series() = seasonal cycle + known slope + noise; sample_box_data() builds a BoxData from it.
+- [ ] **B** ([teammate 3]): anomalies(): value minus that calendar month's mean.
+- [ ] **B** ([teammate 3]): OLS on anomalies vs decimal years: sm.OLS(...).fit(cov_type='HAC', cov_kwds={'maxlags': 12}) → slope, 95% CI, t-test p. Report per decade.
+- [ ] **B** ([teammate 3]): pymannkendall.hamed_rao_modification_test(anomalies) → p and Sen's slope (per month step × 120 = per decade).
+- [ ] **B** ([teammate 3]): Tiers: significant = both p < 0.05 and same sign; suggestive = either p < 0.10; else none. % per decade for relative variables. Years to significance: n_needed = n·(1.96/|t|)^(2/3), extra years = (n_needed − n)/12.
+- [ ] **B** ([teammate 3]): verdict() words: "Air temperature rising about 0.30 °C per decade" / "possibly rising" / "No clear trend yet". correlate() = Pearson r of anomalies.
+- [ ] **B** ([teammate 3]): tests/test_analyze.py: a series with slope 0.3/decade comes back as 0.3 ± 0.05 and significant; flat series rarely significant; missing months handled.
 
-**Sat 18:30–20:00 · B.** Every number on screen is right before anything is built on it.
+Contracts: analyze, anomalies, verdict, correlate; sample_series, sample_box_data
 
-- [ ] **B** ([teammate 3]): Hand-check Tunisia temperature: annual means in a spreadsheet, linear trend per decade should land close to the app's OLS slope.
-- [ ] **B** ([teammate 3]): Confirm anomalies remove the seasons, tiers follow the rule (both tests p < 0.05 for significant), years-to-significance looks sensible.
-- [ ] **B** ([teammate 3]): Review the wording in analyze.verdict(); fix anything that over-claims.
+Tech stack: statsmodels, pymannkendall, numpy, pandas, pytest
 
-Contracts:
+Resources: Acker et al. 2009 (challenge Resources tab) · Hamed and Rao 1998 · pyMannKendall and statsmodels docs
 
-```python
-analyze(series, var_id) -> dict  (keys unchanged)
-```
+Done when: Tests pass; on real Tunisia data the slope matches a hand check in a spreadsheet.
 
-Tech stack: statsmodels (OLS + Newey-West), pymannkendall (Hamed-Rao, Sen), pandas, a spreadsheet
+### Step 3: Dashboard
 
-Resources: Acker et al. SeaWiFS chlorophyll paper (method NASA used) · statsmodels and pymannkendall docs
+**Sat 17:30–20:30 · C.** Three screens that reach a verdict in two clicks, built on sample data, then switched to real data.
 
-Done when: Tunisia slope verified by hand; notes in docs/validation.md.
+- [ ] **C** (yahya0X): app.py with st.session_state.step (1, 2, 3) and st.progress.
+- [ ] **C** (yahya0X): Screen 1: st.radio of REGIONS + "Draw your own box"; folium map with a Rectangle for presets, Draw plugin (rectangle only) for custom; four number inputs to fine-tune; year slider 1981–2025; validate the box (west < east, south < north, 0.5° to 40° per side, at least 10 years).
+- [ ] **C** (yahya0X): Screen 2: radio "Ask a question" / "Explore any variable"; captions show main and linked variables for the region type; "coming later" list.
+- [ ] **C** (yahya0X): Screen 3: verdict card (st.info / st.warning / bordered container by tier), 4 st.metric (OLS trend + CI, t-test p, Mann-Kendall p, Sen's slope), chart with raw/anomaly toggle, record length, years-to-significance note, variable cards, linked-variable box with r and "not proof of cause", How it works, downloads, Back and New case.
+- [ ] **C** (yahya0X): charts.py trend_figure(): anomalies + dashed trend + 95% band, or raw + 12-month mean; box_figure(): box outline, land and sea points. Cache fetch_box with @st.cache_data.
+- [ ] **C** (yahya0X): Use sample_box_data() until A merges step 1, then switch to fetch_box() (one line).
 
-### Step 3: Dashboard on real data
+Contracts: Uses fetch_box, analyze, verdict, correlate, config dicts, report functions; owns trend_figure, box_figure
 
-**Sat 18:30–20:00 · C.** A first-time user reaches a verdict in two clicks.
+Tech stack: streamlit, plotly, folium, streamlit-folium
 
-- [ ] **C** (yahya0X): Run the app on A's real cache; click every flow (3 questions, Explore any variable, a drawn box, Back, New case).
-- [ ] **C** (yahya0X): Polish screen 3: verdict first, readable metrics, chart toggle. Test drawing a box on a non-preset region.
-- [ ] **C** (yahya0X): List bugs in other people's files as GitHub issues assigned to the owner, not as edits.
+Resources: Streamlit docs · Plotly Python docs · our mockups
 
-Contracts:
+Done when: Full Tunisia flow works on real data with no errors.
 
-```python
-Uses only fetch_box, analyze, verdict, correlate, trend_figure
-```
+### Step 4: Content: catalog, regions, report
 
-Tech stack: Streamlit, Plotly, Folium + streamlit-folium
+**Sat 17:30–20:00 · D.** Every variable, region and question explains itself in plain words.
 
-Resources: docs.streamlit.io · plotly.com/python · the mockups from our planning chat
+- [ ] **D** ([teammate 4]): config.py VARIABLES for T2M, PRECTOTCORR, GWETTOP (definition, units, record, why chosen, caveat; relative=True for rain and soil wetness).
+- [ ] **D** ([teammate 4]): REGIONS: Tunisia (7.5, 30.2, 11.6, 37.5), Northern Tunisia, Southern Tunisia, Nile Delta, Western Sahel; governorates with parent "tunisia" (approximate boxes, check on a map): Tunis (9.8, 36.5, 10.6, 37.1), Sfax (10.0, 34.3, 11.2, 35.2), Gafsa (8.0, 34.0, 9.6, 34.8), Tozeur (7.6, 33.6, 8.6, 34.3); Luanda and Namibe from Emna's test.
+- [ ] **D** ([teammate 4]): QUESTIONS hotter / rain / drying with linked variables by region type; classify_box() by centre latitude; linked_for().
+- [ ] **D** ([teammate 4]): report.py: markdown_report() (verdict, test table, variable, caveat, linked variable, method) and csv_bytes().
+- [ ] **D** ([teammate 4]): Submit AppEEARS MODIS NDVI area jobs now (they queue for hours); task IDs in docs/appeears_tasks.md. README: install, run, method.
 
-Done when: Full Tunisia flow works locally on real data.
-
-### Step 4: Words and demo cases
-
-**Sat 18:30–20:00 · D.** Every variable and region explains itself; demo stories picked from real results.
-
-- [ ] **D** ([teammate 4]): Review every text in config.py (definitions, why chosen, caveats) against the real verdicts A posted.
-- [ ] **D** ([teammate 4]): Add governorate presets with `parent: "tunisia"` (approximate boxes, check on a map): Tunis (9.8, 36.5, 10.6, 37.1), Sfax (10.0, 34.3, 11.2, 35.2), Gafsa (8.0, 34.0, 9.6, 34.8), Tozeur (7.6, 33.6, 8.6, 34.3). Small boxes hold only 1–2 POWER points; say so in the blurb.
-- [ ] **D** ([teammate 4]): Add Luanda and Namibe (Angola) presets from Emna's test; A runs prefetch for them and B checks the verdicts before anyone quotes them.
-- [ ] **D** ([teammate 4]): Pick 2–3 demo stories, including one "no clear trend yet" case. Write them in docs/demo_stories.md.
-
-Contracts:
-
-```python
-REGIONS, VARIABLES, QUESTIONS dicts in config.py (keys unchanged)
-```
+Contracts: VARIABLES, REGIONS, QUESTIONS, classify_box, linked_for; markdown_report, csv_bytes
 
 Tech stack: Python dicts, Markdown
 
-Resources: The 5 judging criteria: Impact, Creativity, Validity, Relevance, Presentation
+Resources: NASA POWER parameter definitions · AppEEARS (Earthdata Login) · the 5 judging criteria
 
-Done when: Config text reviewed; demo stories written.
+Done when: Config reviewed against real verdicts; report downloads; AppEEARS jobs submitted.
 
 ### G1: GATE: MVP on real data
 
-**Sat 20:00 · All.** Merge steps 1–4. The Tunisia flow runs end to end on real data on every laptop.
+**Sat 21:00 · All.** Merge steps 1–4; the Tunisia flow runs end to end on real NASA data on every laptop. This meets all four challenge objectives.
 
-- [ ] **A** (R4Y3NN-k): Merge the four pull requests in order: content, stats, ui, data.
-- [ ] **All** (All): Pull main, run the tests and the app.
+- [ ] **A** (R4Y3NN-k): Merge in order: content, stats, data, ui. Fix conflicts with the owner on a call.
+- [ ] **All** (All): Pull main, run `python -m pytest -q` and `streamlit run app.py`. D picks 2–3 demo stories from real verdicts (docs/demo_stories.md), including a "no clear trend yet" case.
 
-Done when: If this slips, the evening goes to fixing it, not to new features.
+Done when: If this slips, the night goes to fixing it, not to new features.
 
-### Step 5: Opposite-trends map
+### Step 5: Opposite-trends zone map
 
-**Sat 20:00–23:00 · B, C.** One map shows where a variable rises and where it falls inside the region (the challenge's key idea).
+**Sat 21:00 – Sun 00:00 · B, C.** One map shows where a variable rises and where it falls inside the region: the challenge's key insight.
 
-- [ ] **B** ([teammate 3]): Implement trend_grid() in td/trendmap.py: analyze() per land point, Benjamini-Hochberg FDR across points (alpha 0.10), significant = q < 0.10 and both tests agree. Add tests/test_trendmap.py.
-- [ ] **C** (yahya0X): Add trend_map_figure(grid_df, var_id) in td/charts.py: red rising, blue falling, a dot on significant points. Code it against a fake grid_df until B merges.
-- [ ] **C** (yahya0X): Show the map on screen 3 under the averaged chart (keep both: the chart meets objective 3, the map shows opposite trends), with one line explaining the dots.
-- [ ] **B** ([teammate 3]): When zones disagree and the box average says "no clear trend", add that to the verdict detail: opposite trends can cancel in an average.
+- [ ] **B** ([teammate 3]): trend_grid(): analyze() on every land point in point_data; Benjamini-Hochberg FDR across points (multipletests(method='fdr_bh'), alpha 0.10); significant = q < 0.10 and both tests agree. tests/test_trendmap.py.
+- [ ] **B** ([teammate 3]): If zones disagree while the box average says "no clear trend", add to the verdict detail: opposite trends can cancel in an average.
+- [ ] **C** (yahya0X): trend_map_figure(): Plotly scattergeo, red rising, blue falling, a dot on significant points; build it against a fake grid_df until B merges.
+- [ ] **C** (yahya0X): Show the map under the averaged chart (keep both) with one line explaining the dots.
 
-Contracts:
+Contracts: trend_grid(point_data, var_id, fdr_alpha=0.10); trend_map_figure(grid_df, var_id)
 
-```python
-trend_grid(point_data, var_id, fdr_alpha=0.10) -> DataFrame[lat, lon, slope_decade, pct_decade, p_ttest, p_mk, q_fdr, significant]
-trend_map_figure(grid_df, var_id) -> plotly Figure
-```
+Tech stack: statsmodels.stats.multitest, plotly scattergeo
 
-Tech stack: statsmodels.stats.multitest.multipletests(method='fdr_bh'), Plotly scattergeo
+Resources: Wilks 2016 (FDR for gridded data) · Emna's doc (Luanda vs Namibe)
 
-Resources: Wilks (2016) on FDR for climate fields · our teammate's doc (opposite trends, Luanda vs Namibe)
-
-Done when: Northern vs Southern Tunisia show on one map; tests pass.
+Done when: Northern vs Southern Tunisia contrast visible on one map; tests pass.
 
 ### Step 6: Region-versus-region sentence
 
-**Sat 20:00–23:00 · B, C, D.** Say whether a sub-region changes faster than its parent region.
+**Sat 21:00 – Sun 00:00 · B, C, D.** Say whether a sub-region changes faster than its parent region.
 
-- [ ] **B** ([teammate 3]): Add compare(sub_res, whole_res, sub_name, whole_name) -> str in td/analyze.py, for example "Northern Tunisia is drying faster than Tunisia as a whole". Only claim faster or slower when the CIs don't overlap; otherwise say "at a similar rate".
-- [ ] **D** ([teammate 4]): Add a `parent` key to child presets in config.py (tunisia_north and tunisia_south → tunisia).
-- [ ] **C** (yahya0X): When a preset has a parent, run both and show the sentence under the verdict.
+- [ ] **B** ([teammate 3]): compare(): "Northern Tunisia is drying faster than Tunisia as a whole" only when the 95% CIs don't overlap; otherwise "at a similar rate".
+- [ ] **D** ([teammate 4]): Make sure every governorate and sub-region preset has `parent`.
+- [ ] **C** (yahya0X): When a preset has a parent, analyze both and show the sentence under the verdict.
 
-Contracts:
-
-```python
-compare(sub_res, whole_res, sub_name, whole_name) -> str
-REGIONS[id]['parent'] -> region id (optional key)
-```
+Contracts: compare(sub_res, whole_res, sub_name, whole_name) -> str; REGIONS[id]['parent']
 
 Tech stack: Same as step 2
 
 Resources: None new
 
-Done when: Sentence shows for Northern and Southern Tunisia.
+Done when: Sentence appears for Northern Tunisia, Southern Tunisia and each governorate.
 
 ### Step 7: Second NASA source for rain
 
-**Sat 21:00 – Sun 12:00 · A, B, D, C.** Rain verdicts say "two sources agree", "sources disagree" or "single source only".
+**Sat 22:00 – Sun 12:00 · A, B, D, C.** Rain verdicts say "two sources agree", "sources disagree, treat with caution" or "single source only".
 
-- [ ] **A** (R4Y3NN-k): Implement fetch_series_giovanni() in td/giovanni.py for GPM IMERG monthly precipitation (harmony-py, average='area'). Cache every result. If Giovanni fails twice, stop and tell the team.
-- [ ] **D** ([teammate 4]): Add an IMERG entry to VARIABLES in config.py with fetcher='giovanni' and a `cross_check` key on PRECTOTCORR pointing to it.
-- [ ] **B** ([teammate 3]): Add agreement(res_a, res_b) -> 'agree' | 'disagree' | 'single' in td/analyze.py (agree = same sign and both at least suggestive).
-- [ ] **C** (yahya0X): Show the agreement line in the verdict card.
+- [ ] **A** (R4Y3NN-k): giovanni.py fetch_series_giovanni(): earthaccess.login, harmony-py Request with BBox, average='area', format='text/csv' for GPM IMERG monthly precipitation; parse time, mean_<variable>; cache. If Giovanni fails twice, stop and tell the team.
+- [ ] **D** ([teammate 4]): VARIABLES entry for IMERG (fetcher='giovanni'); cross_check='IMERG' on PRECTOTCORR.
+- [ ] **B** ([teammate 3]): agreement(): agree = same sign and both at least suggestive; disagree = opposite signs with one significant; otherwise single.
+- [ ] **C** (yahya0X): Agreement line in the verdict card; the app must still work if Giovanni is down.
 
-Contracts:
-
-```python
-fetch_series_giovanni(var_id, box, start_year, end_year) -> pd.Series
-agreement(res_a, res_b) -> str
-VARIABLES[id]['cross_check'] -> variable id (optional key)
-```
+Contracts: fetch_series_giovanni(var_id, box, start_year, end_year) -> pd.Series; agreement(res_a, res_b) -> str
 
 Tech stack: earthaccess, harmony-py, pandas
 
-Resources: Giovanni configured-variables list and quota endpoint · NASA gesdisc-tutorials notebook on Giovanni area-averaged time series (April 2026) · Earthdata Login
+Resources: Giovanni configured-variables list and quota endpoint · GES DISC Giovanni area-averaged notebook (April 2026) · Earthdata Login · Dezfuli et al. 2017 (IMERG over Africa)
 
-Done when: Tunisia rain shows an agreement line; the app still works if Giovanni is down.
+Done when: Tunisia rain shows an agreement line.
 
-### Step 8: NDVI (optional)
+### Step 8: NDVI greenness (optional)
 
-**Sun 09:00–13:00 · A, D, C.** Add "Is the land greening or browning?" if D's AppEEARS jobs finished.
+**Sun 09:00–13:00 · A, D.** Add "Is the land greening or browning?" if the AppEEARS jobs finished.
 
-- [ ] **A** (R4Y3NN-k): Implement load_ndvi(task_id) in td/appeears.py from the finished jobs; cache the series.
-- [ ] **D** ([teammate 4]): Add the NDVI variable and question to config.py.
-- [ ] **C** (yahya0X): Nothing new: the question appears on screen 2 automatically.
+- [ ] **A** (R4Y3NN-k): appeears.py load_ndvi(task_id): download the finished CSV, monthly mean NDVI (0–1), cache.
+- [ ] **D** ([teammate 4]): NDVI variable (fetcher='appeears') and question in config.py. The question appears on screen 2 automatically.
 
-Contracts:
-
-```python
-load_ndvi(task_id) -> pd.Series (monthly, 0–1)
-```
+Contracts: load_ndvi(task_id) -> pd.Series
 
 Tech stack: requests, pandas, AppEEARS API
 
-Resources: NASA appeears-data-resources notebooks
+Resources: NASA AppEEARS data resources notebooks
 
-Done when: NDVI question works for Tunisia, or the step is dropped by 13:00.
+Done when: NDVI works for Tunisia, or the step is dropped at 13:00.
 
-### Step 9: Validation and polish
+### Step 9: Validation, polish, SI disclosure
 
-**Sun 09:00–18:00 · All.** Show judges the method matches NASA's own tools.
+**Sun 09:00–18:00 · All.** Show the method matches NASA's own tools, and mark all SI-assisted work.
 
 - [ ] **B** ([teammate 3]): Compare one result with Giovanni's own time-series plot for the same box; write it in docs/validation.md.
-- [ ] **C** (yahya0X): UX fixes, loading messages, clear error messages; screenshots of each screen.
-- [ ] **D** ([teammate 4]): Draft the project page (problem, solution, NASA data used, method, AI disclosure).
+- [ ] **C** (yahya0X): UX fixes, loading and error messages; screenshots of each screen.
 - [ ] **A** (R4Y3NN-k): Re-run prefetch for every preset and new variable; fix data gaps.
-- [ ] **All** (All): SI disclosure in your own files: keep or add the header line "SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team".
-- [ ] **D** ([teammate 4]): Add an "SI use" section to README.md: what was AI-assisted (planning, first code draft, mockups), what the team did (review, tests, hand-checks, changes), and that all data is NASA data.
+- [ ] **All** (All): Add the header line "SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team" to any of your files where you used an AI assistant.
+- [ ] **D** ([teammate 4]): README "SI use" section and the project page draft (problem, solution, NASA data, method, SI use).
 
-Contracts:
-
-```python
-No new contracts
-```
+Contracts: No new contracts
 
 Tech stack: Same as before
 
-Resources: Giovanni web interface · our planning docs
+Resources: Giovanni web interface · Space Apps SI rules
 
-Done when: Freeze at 18:00 with main green.
+Done when: Feature freeze at 18:00 with main green.
 
 ### G2: GATE: feature freeze
 
@@ -295,9 +390,8 @@ Done when: Freeze at 18:00 with main green.
 
 - [ ] **C** (yahya0X): Screen recording of the best demo story.
 - [ ] **B** ([teammate 3]): Fact-check every number in the video or slides against the app.
-- [ ] **D** ([teammate 4]): Watermark any SI-generated image or video frame (mockups, diagrams) with "SI-generated". Screen recordings of the running app need no watermark. No NASA logos, flags or mission identifiers anywhere.
-- [ ] **D** ([teammate 4]): Answer the SI question in the submission form (draft in PLAN.md, edit so it's true).
-- [ ] **D** ([teammate 4]): 30-second video (English subtitles) or up to 7 slides including the title, at a public link. Fill every project field, disclose AI use, no NASA logo. Tick Terms and Conditions and Confirm All Work is Original, then Submit for Judging.
+- [ ] **D** ([teammate 4]): Watermark any SI-generated image or video frame with "SI-generated" (screen recordings of the app need none). No NASA logos, flags or mission identifiers.
+- [ ] **D** ([teammate 4]): 30-second video (English subtitles) or up to 7 slides including the title, at a public link. Answer the SI question (draft below). Tick Terms and Conditions and Confirm All Work is Original, then Submit for Judging.
 
 Tech stack: Screen recorder, slides tool, Miro board
 
@@ -309,20 +403,12 @@ Done when: Submitted by 23:00.
 
 | Path | Owner |
 | --- | --- |
-| `app.py` | C (yahya0X) |
-| `td/charts.py` | C (yahya0X) |
-| `td/analyze.py` | B ([teammate 3]) |
-| `td/trendmap.py` | B ([teammate 3]) |
-| `tests/` | B ([teammate 3]) |
-| `td/fetch.py` | A (R4Y3NN-k) |
-| `td/cache.py` | A (R4Y3NN-k) |
-| `td/giovanni.py` | A (R4Y3NN-k) |
-| `td/appeears.py` | A (R4Y3NN-k) |
-| `scripts/` | A (R4Y3NN-k) |
-| `td/config.py` | D ([teammate 4]) |
-| `td/report.py` | D ([teammate 4]) |
-| `README.md, docs/` | D ([teammate 4]) |
-| `requirements.txt` | A (ask before adding big dependencies) (R4Y3NN-k) |
+| `app.py, td/charts.py, .streamlit/` | yahya0X (C) |
+| `td/analyze.py, td/trendmap.py, td/sample.py, tests/` | [teammate 3] (B) |
+| `td/fetch.py, td/cache.py, td/giovanni.py, td/appeears.py, scripts/` | R4Y3NN-k (A) |
+| `requirements*.txt, .gitignore, .env.example, pytest.ini` | R4Y3NN-k (A) (ask before adding big dependencies) |
+| `td/config.py, td/report.py, README.md, docs/` | [teammate 4] (D) |
+| `CLAUDE.md, PLAN.md` | R4Y3NN-k (A) (changes agreed in the team chat) |
 
 ## Submission rules
 
@@ -341,7 +427,7 @@ Done when: Submitted by 23:00.
 
 Draft answer for the SI question in the form (edit so it's true for the team):
 
-> Yes. We used Claude (Anthropic) as an assistant. The concept (a guided "detective" tool with opposite-trend zones, two statistical tests and a second data source) comes from our team's own brainstorm documents. We used Claude to compare and refine our options, draft our project plan and task split, write a first version of the app code (Streamlit interface, NASA POWER data fetcher, statistics module and tests) and sketch UI mockups. The team reviewed, ran, tested and changed all code, and checked the statistics by hand against the raw data. All data comes from NASA sources; no data was generated by SI. AI-assisted files are marked in their headers and in the README.
+> Yes. We used Claude (Anthropic) as an assistant. The concept (a guided "detective" tool with opposite-trend zones, two statistical tests and a second data source) comes from our team's own brainstorm documents. We used Claude to compare and refine our options, draft our project plan, task split and architecture, and sketch UI mockups. [If used while coding: and to help write parts of the code, marked in file headers.] The team wrote, ran, tested and reviewed the code, and checked the statistics by hand against the raw data. All data comes from NASA sources; no data was generated by SI.
 
 ## References
 
@@ -356,8 +442,10 @@ Draft answer for the SI question in the form (edit so it's true for the team):
 - [AppEEARS](https://appeears.earthdatacloud.nasa.gov/)
 - [AppEEARS data resources (notebooks)](https://github.com/nasa/AppEEARS-Data-Resources)
 - [pyMannKendall](https://github.com/mmhs013/pyMannKendall)
+- [statsmodels OLS with robust (HAC) errors](https://www.statsmodels.org/stable/regression.html)
 - [statsmodels multipletests (Benjamini-Hochberg)](https://www.statsmodels.org/stable/generated/statsmodels.stats.multitest.multipletests.html)
 - [Streamlit docs](https://docs.streamlit.io)
+- [streamlit-folium](https://github.com/randyzwitch/streamlit-folium)
 - [Plotly Python](https://plotly.com/python/)
 - [NASA Space Apps Challenge](https://www.spaceappschallenge.org/)
 - Acker et al. 2009, SeaWiFS chlorophyll trends near river mouths (challenge Resources tab)
@@ -367,4 +455,4 @@ Draft answer for the SI question in the form (edit so it's true for the team):
 
 ## Out of scope for now
 
-Deployment (Dockerfile, Cloud Run, Cloud Storage cache, custom domain) stays in the repo untouched and is planned separately.
+Deployment (Dockerfile, Cloud Run, Cloud Storage cache, custom domain) is planned separately once the app works locally.
