@@ -8,7 +8,7 @@ Repo R4Y3NN-k/nasa_trend_detective · NASA Space Apps 2026 · Sat 14 Nov 16:45 t
 | --- | --- | --- | --- | --- | --- |
 | A | **R4Y3NN-k** | Data | `td/fetch.py, td/cache.py, td/giovanni.py, td/appeears.py, scripts/, requirements*.txt, .gitignore` | `feat/data-*` | Repo owner: creates the skeleton, reviews and merges every pull request |
 | B | **[teammate 3]** | Stats | `td/analyze.py, td/trendmap.py, td/sample.py, tests/` | `feat/stats-*` | Reviews any change to analyze() outputs |
-| C | **yahya0X** | Dashboard | `app.py, td/charts.py, .streamlit/` | `feat/ui-*` | Only person who edits app.py |
+| C | **yahya0X** | Dashboard | `app.py, td/charts.py, .streamlit/, web/` | `feat/ui-*` | Only person who edits app.py and web/ |
 | D | **[teammate 4]** | Content and story | `td/config.py, td/report.py, README.md, docs/` | `feat/content-*` | Only person who edits config.py |
 
 ## Challenge objectives and how we meet them
@@ -32,25 +32,49 @@ Judging criteria: Impact, Creativity, Validity, Relevance, Presentation.
 Data flows top to bottom; each box is one owner's file.
 
 ```text
-User ──▶ app.py (Streamlit, 3 screens)                                  [C]
-            │  screen 1: region (preset / drawn box) + years
-            │  screen 2: question or variable      ◀── td/config.py      [D]
-            │  screen 3: verdict, chart, map, cards, report
+User ──▶ web/ (map-first UI: full-screen map + right dashboard)         [C]
+            │  static/: Leaflet map, freehand lasso or tap grid cells,
+            │           questions ranked for the area, verdict panel
+            │  server.py: JSON API (stdlib) /api/meta, /api/area,
+            │             /api/point (real values per cell), /api/analyze
+   (or) app.py (Streamlit, 3 screens; kept as a fallback)               [C]
+            │  question or variable                ◀── td/config.py      [D]
             ▼
       td/fetch.py  fetch_box(box, y0, y1) -> BoxData                    [A]
             │  grid of points ─▶ NASA POWER monthly point API
             │  land mask (GWETTOP) ─▶ cos(lat)-weighted average
             │  td/cache.py: every API answer saved as JSON              [A]
-            │  td/giovanni.py, td/appeears.py: extra sources            [A]
+            │  td/giovanni.py (IMERG rain), td/gistemp.py (temperature,
+            │  optional), td/appeears.py (NDVI): cross-check sources    [A]
             ▼
       td/analyze.py  analyze(series, var_id) -> dict                    [B]
             │  anomalies ─▶ OLS + Newey-West (t-test, 95% CI)
             │  Mann-Kendall (Hamed-Rao) + Sen ─▶ tier, years-to-sig
+            │  agreement(main on overlap, cross-check on overlap)
       td/trendmap.py trend_grid(point_data, var_id) -> DataFrame        [B]
             │  analyze() per grid point ─▶ Benjamini-Hochberg FDR
             ▼
       td/charts.py (Plotly figures) [C]   td/report.py (Markdown, CSV) [D]
 ```
+
+## Data sources and cross-checks
+
+Rule: **one main dataset per variable, plus an independent NASA dataset to cross-check it where one exists.** The verdict always comes from the main dataset; the second one only says whether an independent source sees the same trend.
+
+| Variable | Main dataset (verdict) | Cross-check (independent) | Overlap used for the check | Status |
+| --- | --- | --- | --- | --- |
+| Rainfall `PRECTOTCORR` | NASA POWER / MERRA-2, 1981–2025, ½° × ⅝° | **GPM IMERG** monthly via Giovanni, 2000/06–2025, 0.1° | 2001–2025 | Step 7 (required) |
+| Air temperature `T2M` | NASA POWER / MERRA-2 | **GISTEMP v4** (NASA GISS) gridded anomalies, station + ship based, 2° | 1981–2025 | Step 7b (optional) |
+| Topsoil wetness `GWETTOP` | NASA POWER / MERRA-2 | none in time (GLDAS via Giovanni possible later; SMAP starts 2015, too short) | – | Single source |
+| Greenness NDVI (step 8) | MODIS via AppEEARS, 2000– | none | – | Single source |
+
+What we do and do not do with the data:
+
+- **Never merge or splice datasets into one series.** Sources differ in grid, sensors, bias and start date; joining them creates a step at the join that the tests report as a trend.
+- **No data augmentation or gap filling.** It adds months that were never observed, makes the record look longer and the p-values better than they are, and breaks the rule that every number on screen comes from real data.
+- **Cleaning only:** fill value −999 → missing; month 13 (annual) dropped; missing months counted and shown; sea cells skipped (land mask); anomalies remove the seasons before any test.
+- **Compare trends, not values.** Each source has its own bias, so averages differ; the question is whether the direction and size of change agree. Both series are analysed on the **same area and the same overlapping months** before `agreement()` is called.
+- The verdict card says one of: "Two NASA sources agree", "Sources disagree, treat with caution", "Single source only" (also when the second source is down or not logged in: the app never fails because of it).
 
 ## Repository structure
 
@@ -65,13 +89,17 @@ nasa_trend_detective/
 ├── .gitignore, .env.example       ignore .venv, data/cache/*.json, .env      A
 ├── pytest.ini                     pythonpath = . ; testpaths = tests         A
 ├── .streamlit/config.toml         theme, headless                            C
-├── app.py                         the 3 screens                              C
+├── app.py                         the 3 screens (Streamlit fallback)         C
+├── web/
+│   ├── server.py                  JSON API over td.* + static files (stdlib) C
+│   └── static/                    index.html, app.js (Tailwind, Leaflet)     C
 ├── td/
 │   ├── __init__.py                                                           A
 │   ├── config.py                  VARIABLES, REGIONS, QUESTIONS, rules       D
 │   ├── cache.py                   get/put JSON by key                        A
 │   ├── fetch.py                   POWER client, grid, land mask, average     A
 │   ├── giovanni.py                GPM IMERG via Giovanni (step 7)            A
+│   ├── gistemp.py                 GISTEMP v4 temperature (step 7b, optional) A
 │   ├── appeears.py                MODIS NDVI via AppEEARS (step 8)           A
 │   ├── analyze.py                 stats engine + verdict words               B
 │   ├── trendmap.py                per-point trends + FDR (step 5)            B
@@ -89,14 +117,16 @@ nasa_trend_detective/
 | Layer | Tool | Why |
 | --- | --- | --- |
 | Language | Python 3.12 | One language for the whole team |
-| App and UI | streamlit | Three screens in pure Python, no HTML or JS |
-| Map picker | folium + streamlit-folium | Preview a preset box; draw a rectangle (Draw plugin, rectangle only) |
+| App and UI | web/: Python http.server (stdlib) + Tailwind CSS + Leaflet (CDN) + Plotly.js (bundled with plotly) | Full-screen map, freehand lasso, right-hand dashboard; no new Python dependency |
+| Map tiles | OpenStreetMap HOT style | Same look as our uMap reference template |
+| Fallback UI | streamlit, folium + streamlit-folium | The original 3-screen app.py, kept working |
 | Charts and zone map | plotly | Interactive time series; scattergeo zone map |
 | HTTP | requests | NASA POWER calls with timeout and retries |
 | Tables | pandas, numpy | Monthly series, weighted averages |
 | Statistics | statsmodels | OLS with Newey-West (HAC) errors; multipletests(method='fdr_bh') |
 | Statistics | pymannkendall | hamed_rao_modification_test: p-value and Sen's slope |
 | Second source | earthaccess, harmony-py | Earthdata Login and Giovanni area-averaged series (step 7) |
+| Temperature cross-check | GISTEMP v4 NetCDF from data.giss.nasa.gov | Station-based, independent of MERRA-2 (step 7b; reading NetCDF needs a new dependency, so A decides) |
 | Tests | pytest + streamlit.testing.v1.AppTest | Known-trend tests and a full click-through without network |
 | Parallel fetch | concurrent.futures.ThreadPoolExecutor (stdlib) | 4 points at a time, gentle on POWER |
 
@@ -119,8 +149,23 @@ class FetchError(RuntimeError): ...            # message safe to show users
 def fetch_box(box, start_year, end_year) -> BoxData       # box = (west, south, east, north)
 def grid_points(box) -> list[tuple[float, float]]
 
+def fetch_point(lat, lon, start_year, end_year) -> pd.DataFrame       # one cell, cached (used by web/)
+def is_land(df) -> bool ; def area_mean(point_data) -> pd.DataFrame
+
+# td/giovanni.py, td/gistemp.py  (A) — cross-check sources, area-averaged monthly series
+def fetch_series_giovanni(var_id, box, start_year, end_year) -> pd.Series   # step 7, IMERG mm/day
+def fetch_series_gistemp(box, start_year, end_year) -> pd.Series            # step 7b, °C anomaly
+    # both raise FetchError with a user-safe message when the source is down / not logged in
+
 # td/cache.py  (A)
 def make_key(*parts) -> str ; def get(key) -> dict | None ; def put(key, data) -> None
+
+# web/server.py  (C) — JSON API used by web/static/app.js
+GET  /api/meta                                   -> {years, max_points, min_years, variables}
+POST /api/area    {points: [[lat, lon], ...]}    -> {region_type, questions (ranked)}
+POST /api/point   {lat, lon}                     -> {land, means{var}, months, first, last}
+POST /api/analyze {points, var_id, linked, years}-> {res, words, figures, points, link, zones, cross}
+    # cross = {source, agreement, res_overlap_main, res_overlap_cross, overlap: [y0, y1]} or {agreement: "single", reason}
 
 # td/analyze.py  (B)
 def anomalies(series) -> pd.Series
@@ -131,7 +176,7 @@ def analyze(series, var_id) -> dict   # keys: var_id, start, end, n_months, miss
 def verdict(res) -> {"headline": str, "detail": str}
 def correlate(a, b) -> {"r": float | None, "n": int}
 def compare(sub_res, whole_res, sub_name, whole_name) -> str          # step 6
-def agreement(res_a, res_b) -> "agree" | "disagree" | "single"        # step 7
+def agreement(res_a, res_b) -> "agree" | "disagree" | "single"        # step 7; both analysed on the same overlap
 
 # td/trendmap.py  (B)
 def trend_grid(point_data, var_id, fdr_alpha=0.10) -> pd.DataFrame
@@ -148,7 +193,8 @@ def box_figure(points, box) -> go.Figure
 
 # td/config.py  (D)
 VARIABLES[id] = {name, short, definition, source, power_param, units, record, relative, decimals, why, caveat,
-                 fetcher ("power"|"giovanni"|"appeears"), cross_check (optional)}
+                 fetcher ("power"|"giovanni"|"gistemp"|"appeears"), cross_check (optional: id of the
+                 cross-check variable), cross_only (optional, True: never offered as a main variable)}
 REGIONS[id]   = {name, box, type ("arid"|"savanna"|"temperate"|"polar"), blurb, parent (optional)}
 QUESTIONS[id] = {label, icon, primary, linked: {region_type: var_id, "default": var_id}, why_linked: {...}}
 def classify_box(box) -> region type ; def linked_for(question_id, region_type) -> (var_id, why)
@@ -175,6 +221,8 @@ cd nasa_trend_detective
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt                 # after step 0 is merged
 git checkout -b feat/<area>-<step>
+python -m web.server                                # map-first UI on http://localhost:8600
+streamlit run app.py                                # fallback 3-screen UI
 ```
 
 ## Steps at a glance
@@ -189,7 +237,9 @@ git checkout -b feat/<area>-<step>
 | G1. GATE: MVP on real data | Sat 21:00 | All | Merge steps 1–4; the Tunisia flow runs end to end on real NASA data on every laptop. This meets all four challenge objectives. |
 | 5. Opposite-trends zone map | Sat 21:00 – Sun 00:00 | B, C | One map shows where a variable rises and where it falls inside the region: the challenge's key insight. |
 | 6. Region-versus-region sentence | Sat 21:00 – Sun 00:00 | B, C, D | Say whether a sub-region changes faster than its parent region. |
-| 7. Second NASA source for rain | Sat 22:00 – Sun 12:00 | A, B, D, C | Rain verdicts say "two sources agree", "sources disagree, treat with caution" or "single source only". |
+| 3b. Map-first web UI | Sat 18:30–21:00 (done on `yahya`) | C | Full-screen map, lasso or tap NASA grid cells, real values per cell, dashboard on the right. |
+| 7. Cross-check rain with GPM IMERG | Sat 22:00 – Sun 12:00 | A, B, D, C | Rain verdicts say "two NASA sources agree", "sources disagree, treat with caution" or "single source only". |
+| 7b. Cross-check temperature with GISTEMP (optional) | Sun 09:00–14:00 | A, D, C | Same agreement line for air temperature from an independent, station-based NASA record. Dropped at 14:00 if not working. |
 | 8. NDVI greenness (optional) | Sun 09:00–13:00 | A, D | Add "Is the land greening or browning?" if the AppEEARS jobs finished. |
 | 9. Validation, polish, SI disclosure | Sun 09:00–18:00 | All | Show the method matches NASA's own tools, and mark all SI-assisted work. |
 | G2. GATE: feature freeze | Sun 18:00 | All | Only bug fixes after this point. |
@@ -329,22 +379,54 @@ Resources: None new
 
 Done when: Sentence appears for Northern Tunisia, Southern Tunisia and each governorate.
 
-### Step 7: Second NASA source for rain
+### Step 7: Cross-check rain with GPM IMERG
 
-**Sat 22:00 – Sun 12:00 · A, B, D, C.** Rain verdicts say "two sources agree", "sources disagree, treat with caution" or "single source only".
+**Sat 22:00 – Sun 12:00 · A, B, D, C.** Rain verdicts say "two NASA sources agree", "sources disagree, treat with caution" or "single source only". Rules: see Data sources and cross-checks (no merging, compare trends on the same overlap).
 
-- [ ] **A** (R4Y3NN-k): giovanni.py fetch_series_giovanni(): earthaccess.login, harmony-py Request with BBox, average='area', format='text/csv' for GPM IMERG monthly precipitation; parse time, mean_<variable>; cache. If Giovanni fails twice, stop and tell the team.
-- [ ] **D** ([teammate 4]): VARIABLES entry for IMERG (fetcher='giovanni'); cross_check='IMERG' on PRECTOTCORR.
-- [ ] **B** ([teammate 3]): agreement(): agree = same sign and both at least suggestive; disagree = opposite signs with one significant; otherwise single.
-- [ ] **C** (yahya0X): Agreement line in the verdict card; the app must still work if Giovanni is down.
+How it flows (one request):
 
-Contracts: fetch_series_giovanni(var_id, box, start_year, end_year) -> pd.Series; agreement(res_a, res_b) -> str
+1. The user picks cells and a rain question; the verdict is computed on POWER `PRECTOTCORR` over the chosen years, as today.
+2. The server builds the cross-check box from the picked **land** cells (their bounding box plus half a cell) and calls `fetch_series_giovanni("IMERG", box, max(y0, 2001), y1)`.
+3. Overlap = months both series have (at most 2001–2025). Both series are cut to it and each goes through `analyze()`.
+4. `agreement(res_main_overlap, res_imerg_overlap)` gives the line on the card, with both overlap slopes per decade next to it.
+5. Any FetchError, missing login or fewer than 10 overlapping years → "Single source only" plus the reason. Never an error screen.
+
+Tasks:
+
+- [x] **A** (R4Y3NN-k): giovanni.py fetch_series_giovanni() (merged in PR #7): GPM_3IMERGM_07 area average via harmony-py, mm/hr → mm/day (×24), month-start index, cached; GiovanniError is a FetchError; tests/test_giovanni.py (parser, units + cache, gives up after two failures, missing login). `.env.example` has the Earthdata names.
+- [ ] **A** (R4Y3NN-k): Run it once for real with an Earthdata login on Tunisia and northern Tunisia, and prefetch IMERG for every demo box, so the demo never depends on Giovanni being up. If Giovanni fails twice, stop and tell the team.
+- [ ] **D** ([teammate 4]): README setup: how to fill `.env` from `.env.example` for the cross-check (optional; the app works without it).
+- [ ] **D** ([teammate 4]): VARIABLES entry `IMERG` (name "Rainfall (satellite, GPM IMERG)", units mm/day, record "2000/06–2025", fetcher='giovanni', cross_only=True, caveat on the shorter record); `cross_check='IMERG'` on PRECTOTCORR. Explain the cross-check in one sentence on the variable card.
+- [ ] **B** ([teammate 3]): agreement(res_a, res_b): "single" if res_b is None; "agree" = same sign and both at least suggestive; "disagree" = opposite signs with at least one significant; otherwise "single". tests/test_analyze.py: agree, disagree, single, None.
+- [ ] **B** ([teammate 3]): Helper `overlap(a, b) -> (a_cut, b_cut)` in analyze.py (months where both are present), so web/ and app.py cut the same way; test it.
+- [ ] **C** (yahya0X): web/server.py: in /api/analyze, when the variable has `cross_check`, run steps 2–5 and return `cross` (see Contracts). Run it after the main verdict and cache it, so a slow Giovanni never delays the main answer more than once.
+- [ ] **C** (yahya0X): Verdict panel: agreement line under the test lights ("Two NASA sources agree: POWER +0.07, IMERG +0.05 mm/day per decade, 2001–2025"); Evidence tab: both sources, their overlap and resolution; "Single source only (reason)" when missing. Same line in app.py.
+- [ ] **C** (yahya0X): Test with Giovanni unreachable (no login) and with a saved series: the app still answers.
+
+Contracts: fetch_series_giovanni(var_id, box, start_year, end_year) -> pd.Series; agreement(res_a, res_b) -> str; overlap(a, b) -> (pd.Series, pd.Series); /api/analyze `cross`
 
 Tech stack: earthaccess, harmony-py, pandas
 
-Resources: Giovanni configured-variables list and quota endpoint · GES DISC Giovanni area-averaged notebook (April 2026) · Earthdata Login · Dezfuli et al. 2017 (IMERG over Africa)
+Resources: Giovanni configured-variables list and quota endpoint · GES DISC Giovanni area-averaged notebook (April 2026) · Earthdata Login · Dezfuli et al. 2017 (IMERG over Africa) · GPM IMERG documentation
 
-Done when: Tunisia rain shows an agreement line.
+Done when: northern Tunisia and Tunisia rain show an agreement line in web/ and app.py; with no Earthdata login the line says "Single source only" and nothing breaks; tests pass.
+
+### Step 7b: Cross-check temperature with GISTEMP (optional)
+
+**Sun 09:00–14:00 · A, D, C.** The same agreement line for air temperature, from NASA GISS's station-based record, which is independent of the MERRA-2 model. Dropped at 14:00 if it is not working.
+
+- [ ] **A** (R4Y3NN-k): Decide the reader: GISTEMP v4 gridded anomalies are NetCDF (2° grid, 250 km or 1200 km smoothing) and need xarray + netCDF4/h5netcdf (new dependencies: agree in chat first). Download once into data/cache (gitignored), never commit it.
+- [ ] **A** (R4Y3NN-k): td/gistemp.py fetch_series_gistemp(box, y0, y1): cells whose centre is inside the box (at least the nearest one), cos(latitude) average, monthly °C anomaly, month-start index; FetchError if the file is missing. Test with a tiny synthetic NetCDF.
+- [ ] **D** ([teammate 4]): VARIABLES entry `GISTEMP` (fetcher='gistemp', cross_only=True, caveat: anomaly not absolute temperature, 2° cells are coarser than POWER); `cross_check='GISTEMP'` on T2M.
+- [ ] **C** (yahya0X): Nothing new beyond step 7: the cross-check path is generic, keyed on `cross_check`. Comparing trends of anomalies is valid even though GISTEMP has no absolute values.
+
+Contracts: fetch_series_gistemp(box, start_year, end_year) -> pd.Series
+
+Tech stack: xarray, netCDF4 or h5netcdf (if agreed), pandas
+
+Resources: GISTEMP v4 (data.giss.nasa.gov/gistemp) · Lenssen et al. 2019 (GISTEMP uncertainty)
+
+Done when: Tunisia temperature shows "Two NASA sources agree" or an honest disagreement; or the step is dropped at 14:00.
 
 ### Step 8: NDVI greenness (optional)
 
@@ -367,6 +449,8 @@ Done when: NDVI works for Tunisia, or the step is dropped at 13:00.
 
 - [ ] **B** ([teammate 3]): Compare one result with Giovanni's own time-series plot for the same box; write it in docs/validation.md.
 - [ ] **C** (yahya0X): UX fixes, loading and error messages; screenshots of each screen.
+- [ ] **C** (yahya0X): Proposed (agree in chat): draw picked grid cells as squares at their native 0.5° × 0.625° size instead of dots, so the map shows what the data really is (gridded model cells, not stations); same squares for the zone map.
+- [ ] **B** ([teammate 3]): docs/validation.md: for rain, quote the POWER vs IMERG overlap slopes from the app; for temperature (if 7b) POWER vs GISTEMP.
 - [ ] **A** (R4Y3NN-k): Re-run prefetch for every preset and new variable; fix data gaps.
 - [ ] **All** (All): Add the header line "SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team" to any of your files where you used an AI assistant.
 - [ ] **D** ([teammate 4]): README "SI use" section and the project page draft (problem, solution, NASA data, method, SI use).
@@ -403,9 +487,9 @@ Done when: Submitted by 23:00.
 
 | Path | Owner |
 | --- | --- |
-| `app.py, td/charts.py, .streamlit/` | yahya0X (C) |
+| `app.py, td/charts.py, .streamlit/, web/` | yahya0X (C) |
 | `td/analyze.py, td/trendmap.py, td/sample.py, tests/` | [teammate 3] (B) |
-| `td/fetch.py, td/cache.py, td/giovanni.py, td/appeears.py, scripts/` | R4Y3NN-k (A) |
+| `td/fetch.py, td/cache.py, td/giovanni.py, td/gistemp.py, td/appeears.py, scripts/` | R4Y3NN-k (A) |
 | `requirements*.txt, .gitignore, .env.example, pytest.ini` | R4Y3NN-k (A) (ask before adding big dependencies) |
 | `td/config.py, td/report.py, README.md, docs/` | [teammate 4] (D) |
 | `CLAUDE.md, PLAN.md` | R4Y3NN-k (A) (changes agreed in the team chat) |
@@ -414,7 +498,7 @@ Done when: Submitted by 23:00.
 
 - Deadline Sunday 15 Nov 23:59 local; we submit by 23:00.
 - Demo: a video of up to 30 seconds or up to 7 slides including the title, hosted at a public link; everything in English (or English subtitles).
-- Use at least one NASA dataset and name it (NASA POWER / MERRA-2; Giovanni and AppEEARS where used).
+- Use at least one NASA dataset and name it (NASA POWER / MERRA-2; GPM IMERG via Giovanni, GISTEMP v4 and MODIS via AppEEARS where used).
 - Tick Terms and Conditions and Confirm All Work is Original, then press Submit for Judging.
 
 ## SI (AI) rules
@@ -444,12 +528,17 @@ Draft answer for the SI question in the form (edit so it's true for the team):
 - [pyMannKendall](https://github.com/mmhs013/pyMannKendall)
 - [statsmodels OLS with robust (HAC) errors](https://www.statsmodels.org/stable/regression.html)
 - [statsmodels multipletests (Benjamini-Hochberg)](https://www.statsmodels.org/stable/generated/statsmodels.stats.multitest.multipletests.html)
+- [GPM IMERG](https://gpm.nasa.gov/data/imerg)
+- [GISTEMP v4 (NASA GISS)](https://data.giss.nasa.gov/gistemp/)
+- [GLDAS (possible later soil-moisture cross-check)](https://ldas.gsfc.nasa.gov/gldas)
+- [Leaflet](https://leafletjs.com/) · [Tailwind CSS](https://tailwindcss.com/) · [OpenStreetMap HOT tiles](https://www.hotosm.org/)
 - [Streamlit docs](https://docs.streamlit.io)
 - [streamlit-folium](https://github.com/randyzwitch/streamlit-folium)
 - [Plotly Python](https://plotly.com/python/)
 - [NASA Space Apps Challenge](https://www.spaceappschallenge.org/)
 - Acker et al. 2009, SeaWiFS chlorophyll trends near river mouths (challenge Resources tab)
 - Hamed and Rao 1998, modified Mann-Kendall test for autocorrelated data, Journal of Hydrology
+- Lenssen et al. 2019, improvements in the GISTEMP uncertainty model, Journal of Geophysical Research: Atmospheres
 - Wilks 2016, field significance and FDR for gridded climate data, Bulletin of the AMS
 - [Dezfuli et al. 2017, Validation of IMERG precipitation in Africa, Journal of Hydrometeorology](https://doi.org/10.1175/JHM-D-17-0139.1)
 
