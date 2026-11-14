@@ -36,7 +36,7 @@ function insidePolygon(lat, lon, poly) {
 // ---------------------------------------------------------------- state
 const S = {
   meta: null,
-  mode: 'draw',               // 'draw' | 'points'
+  mode: 'pan',                // 'pan' | 'draw' | 'points'
   picked: new Map(),          // key -> [lat, lon]
   questions: [], regionType: null,
   userChose: false,           // true once the person clicks a question or variable themselves
@@ -79,7 +79,13 @@ async function api(path, body) {
 }
 
 // ---------------------------------------------------------------- map
-const map = L.map('map', { zoomControl: false, attributionControl: true, minZoom: 3 }).setView([34.2, 9.6], 6);
+// Smooth movement: fractional zoom steps, gentler wheel, inertia when you let go, arrow keys, wrap around the world.
+const map = L.map('map', {
+  zoomControl: false, attributionControl: true, minZoom: 2,
+  zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90, wheelDebounceTime: 20,
+  inertia: true, inertiaDeceleration: 4000, inertiaMaxSpeed: 1500, easeLinearity: 0.25, worldCopyJump: true,
+  keyboard: true, keyboardPanDelta: 120, boxZoom: false,
+}).setView([34.2, 9.6], 6);
 L.control.zoom({ position: 'topleft' }).addTo(map);
 L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
   maxZoom: 18, subdomains: 'abc',
@@ -90,12 +96,13 @@ const pointsLayer = L.layerGroup().addTo(map);
 const zonesLayer = L.layerGroup().addTo(map);
 let lasso = null;
 
+// Modes: 'pan' (default: drag the map like a cursor), 'draw' (one loop, then back to pan), 'points' (tap cells; drag still moves).
 function setMode(mode) {
   S.mode = mode;
   const drawing = mode === 'draw';
   map.getContainer().classList.toggle('drawing', drawing);
-  if (drawing) { map.dragging.disable(); map.boxZoom.disable(); } else { map.dragging.enable(); map.boxZoom.enable(); }
-  for (const [id, on] of [['tool-draw', drawing], ['tool-points', !drawing]]) {
+  if (drawing) map.dragging.disable(); else map.dragging.enable();
+  for (const [id, on] of [['tool-pan', mode === 'pan'], ['tool-draw', drawing], ['tool-points', mode === 'points']]) {
     const b = $(id);
     b.setAttribute('aria-pressed', String(on));
     b.className = 'w-11 h-11 flex items-center justify-center border-b border-line ' + (on ? 'bg-charcoal text-white' : 'bg-white text-ink hover:bg-land');
@@ -108,7 +115,8 @@ function updateHint() {
   const n = S.picked.size;
   if (S.screen === 'verdict') $('hint-text').textContent = `Verdict for the ${n} point${n === 1 ? '' : 's'} shown · Back to change the area`;
   else if (S.screen === 'loading') $('hint-text').textContent = 'Fetching NASA POWER data…';
-  else if (S.mode === 'draw') $('hint-text').textContent = 'Draw around the area you want to investigate, or switch to points and tap them';
+  else if (S.mode === 'draw') $('hint-text').textContent = 'Draw one loop around your area (the map moves again after)';
+  else if (S.mode === 'pan') $('hint-text').textContent = 'Drag to move, scroll to zoom · pen to draw an area (or Shift + drag) · dots to pick points';
   else $('hint-text').textContent = `Tap grid points to add or remove them (up to ${S.meta ? S.meta.max_points : 30})`;
 }
 
@@ -158,8 +166,10 @@ function renderPoints() {
   const el = map.getContainer();
   let drawing = false, path = [], line = null;
   el.addEventListener('pointerdown', (e) => {
-    if (S.mode !== 'draw' || S.screen !== 'pick' || e.button !== 0) return;
+    // Draw with the pen tool, or with Shift + drag from any mode (then the map does not pan meanwhile).
+    if ((S.mode !== 'draw' && !e.shiftKey) || S.screen !== 'pick' || e.button !== 0) return;
     if (e.target.closest('.leaflet-control')) return;
+    if (S.mode !== 'draw') map.dragging.disable();   // Shift + drag: draw now, pan again on release
     drawing = true;
     path = [map.mouseEventToLatLng(e)];
     if (lasso) { lasso.remove(); lasso = null; }
@@ -179,9 +189,11 @@ function renderPoints() {
     if (!drawing) return;
     drawing = false;
     line.remove();
+    if (S.mode !== 'draw') map.dragging.enable();
     if (path.length < 5) return;
     lasso = L.polygon(path, { color: '#046460', weight: 3, dashArray: '10 6', fillColor: '#046460', fillOpacity: 0.12, interactive: false }).addTo(map);
     selectInside(path);
+    if (S.mode === 'draw') setMode('pan');          // one loop per click on the pen: the map moves again
   };
   el.addEventListener('pointerup', finish);
   el.addEventListener('pointercancel', finish);
@@ -226,7 +238,7 @@ function pumpPointData() {
     api('/api/point', { lat, lon })
       .then((d) => S.pd.set(key, { status: 'ok', ...d }))
       .catch((err) => S.pd.set(key, { status: 'error', error: err.message }))
-      .finally(() => { pdActive--; pdChanged(); pumpPointData(); setTimeout(maybeScan, 0); });  // not via rAF: hidden tabs pause it
+      .finally(() => { pdActive--; pdChanged(); pumpPointData(); setTimeout(maybeScan, 0); setTimeout(maybeClimate, 0); });  // not via rAF: hidden tabs pause it
   }
   pdChanged();
 }
@@ -237,6 +249,37 @@ function pdChanged() {
 }
 
 // ---------------------------------------------------------------- quick scan: what is changing in this area?
+// Climate from the points loaded so far (each /api/point answer carries its 1981-2025 means), so the questions
+// that fit the place appear after the first point or two, not after the whole area. The scan refines it later.
+let climateTimer = null;
+function maybeClimate() {
+  if (S.screen !== 'pick') return;
+  const loaded = [...S.picked.keys()].filter((k) => { const d = S.pd.get(k); return d && d.status === 'ok' && d.land; });
+  if (!loaded.length) return;
+  const sig = loaded.sort().join('|');
+  if (S.climateSig === sig) return;
+  S.climateSig = sig;
+  clearTimeout(climateTimer);
+  climateTimer = setTimeout(async () => {
+    const sum = {}, wsum = {};
+    for (const k of loaded) {
+      const d = S.pd.get(k), w = Math.cos(d.lat * Math.PI / 180);
+      for (const [v, x] of Object.entries(d.means || {})) {
+        if (x === null || x === undefined) continue;
+        sum[v] = (sum[v] || 0) + w * x; wsum[v] = (wsum[v] || 0) + w;
+      }
+    }
+    const means = Object.fromEntries(Object.keys(sum).map((v) => [v, sum[v] / wsum[v]]));
+    try {
+      const d = await api('/api/climate', { means });
+      if (S.climateSig !== sig || S.screen !== 'pick' || !d.questions || !d.questions.length) return;
+      S.questions = d.questions; S.climate = d.climate;
+      if (!S.userChose || (!S.variable && !S.questions.some((q) => q.id === S.question))) { S.question = S.questions[0].id; S.variable = null; }
+      renderPanel(); renderPoints();
+    } catch (_) { /* the full scan will still set the questions */ }
+  }, 150);
+}
+
 const scanSig = () => `${[...S.picked.keys()].sort().join('|')}#${S.years.join('-')}`;
 
 function maybeScan() {
@@ -349,6 +392,7 @@ function renderPdStatus() {
 let areaTimer = null;
 function selectionChanged() {
   S.climate = null;           // new area: its climate is read again once its data is in
+  S.climateSig = null;
   queuePointData();
   renderPoints();
   renderPanel();
@@ -420,7 +464,7 @@ function renderPick() {
   $('panel-body').innerHTML = `
   <div class="flex flex-col gap-[22px]">
     <section class="flex flex-col gap-2.5">
-      <div class="flex items-center justify-between"><h2 class="${H2}">Your area</h2><span class="text-xs text-muted">${S.mode === 'draw' ? 'Freehand area' : 'Picked points'}</span></div>
+      <div class="flex items-center justify-between"><h2 class="${H2}">Your area</h2><span class="text-xs text-muted">${lasso ? 'Freehand area' : 'Picked points'}</span></div>
       <div class="flex items-baseline gap-2.5"><span class="text-[34px] font-extrabold leading-none">${n}</span><span class="text-[15px] text-charcoal">grid point${n === 1 ? '' : 's'} selected</span></div>
       <p class="m-0 text-sm leading-snug text-charcoal">${n ? (S.capped ? 'Large area: every other NASA grid cell is used so at most ' + S.meta.max_points + ' points are fetched. ' : '') + 'Each dot is one NASA POWER grid cell; sea cells are skipped and land cells averaged with cos(latitude) weights.' : 'Nothing picked yet. Draw around an area on the map, or switch to points.'}</p>
       <div id="pd-status"></div>
@@ -583,7 +627,7 @@ function newCase() {
   S.picked.clear(); S.question = S.questions[0] ? S.questions[0].id : null; S.variable = null; S.userChose = false;
   if (lasso) { lasso.remove(); lasso = null; }
   backToPick();
-  setMode('draw');
+  setMode('pan');
 }
 
 function drawZones() {
@@ -761,6 +805,7 @@ function renderPanel() {
 }
 
 // ---------------------------------------------------------------- boot
+$('tool-pan').addEventListener('click', () => setMode('pan'));
 $('tool-draw').addEventListener('click', () => setMode('draw'));
 $('tool-points').addEventListener('click', () => setMode('points'));
 $('tool-clear').addEventListener('click', () => { if (S.screen !== 'pick') return; S.picked.clear(); if (lasso) { lasso.remove(); lasso = null; } selectionChanged(); });
@@ -775,7 +820,7 @@ map.on('moveend', () => { if (S.mode === 'points') renderPoints(); });
     $('panel-body').innerHTML = `<p role="alert" class="text-sm">Could not reach the server: ${esc(err.message)}</p>`;
     return;
   }
-  setMode('draw');
+  setMode('pan');
   renderPanel();
   loadQuestions();
 })();

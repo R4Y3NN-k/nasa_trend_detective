@@ -96,7 +96,7 @@ def test_zones_by_one_variable_coloured_by_another():
         assert node["value"] == pytest.approx(np.mean([rain.loc[m] for m in node["members"]]))
     zones = tree[tree["parent"] == ROOT]
     assert {frozenset(lat >= 32 for lat, _ in m) for m in zones["members"]} == {frozenset({True}), frozenset({False})}
-    assert "Rainfall" in tree.iloc[0]["sentence"] and "Air temperature" in tree.iloc[0]["sentence"]
+    assert "Rain and snow" in tree.iloc[0]["sentence"] and "Air temperature" in tree.iloc[0]["sentence"]
 
 
 def test_too_few_points_gives_root_and_leaves_only():

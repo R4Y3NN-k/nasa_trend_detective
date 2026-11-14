@@ -17,14 +17,14 @@ SHORT_RECORD_YEARS = 30
 # Used only until td/config.py (owner D) defines VARIABLES.
 _FALLBACK_VARIABLES = {
     "T2M": {"name": "Air temperature", "units": "°C", "relative": False, "decimals": 2},
-    "PRECTOTCORR": {"name": "Rainfall", "units": "mm/day", "relative": True, "decimals": 2},
+    "PRECTOTCORR": {"name": "Rain and snow", "units": "mm/day", "relative": True, "decimals": 2},
     "GWETTOP": {"name": "Topsoil wetness", "units": "(0 to 1)", "relative": True, "decimals": 3},
     "T2M_MAX": {"name": "Hottest temperature of the month", "units": "°C", "relative": False, "decimals": 2},
     "T2M_MIN": {"name": "Coldest temperature of the month", "units": "°C", "relative": False, "decimals": 2},
     "FROST_DAYS": {"name": "Frost days", "units": "days/month", "relative": True, "decimals": 2},
     "PRECSNOLAND": {"name": "Snowfall", "units": "mm/day", "relative": True, "decimals": 3},
     "SNODP": {"name": "Snow depth", "units": "cm", "relative": True, "decimals": 2},
-    "RH2M": {"name": "Humidity", "units": "%", "relative": False, "decimals": 2},
+    "RH2M": {"name": "Relative humidity", "units": "%", "relative": False, "decimals": 2},
 }
 
 

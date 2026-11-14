@@ -60,8 +60,8 @@ FALLBACK_VARIABLES = {
     "T2M": {"name": "Air temperature", "units": "°C", "decimals": 2,
             "definition": "Monthly mean air temperature 2 m above the ground.",
             "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
-    "PRECTOTCORR": {"name": "Rainfall", "units": "mm/day", "decimals": 2,
-                    "definition": "Average daily precipitation in each month (bias-corrected).",
+    "PRECTOTCORR": {"name": "Rain and snow", "units": "mm/day", "decimals": 2,
+                    "definition": "Average daily precipitation in each month: rain plus melted snow (bias-corrected).",
                     "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
     "GWETTOP": {"name": "Topsoil wetness", "units": "0 to 1", "decimals": 3,
                 "definition": "How wet the top 5 cm of soil is, from 0 (dry) to 1 (saturated).",
@@ -81,7 +81,7 @@ FALLBACK_VARIABLES = {
     "SNODP": {"name": "Snow depth", "units": "cm", "decimals": 2,
               "definition": "Average depth of the snow lying on the ground.",
               "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
-    "RH2M": {"name": "Humidity", "units": "%", "decimals": 2,
+    "RH2M": {"name": "Relative humidity", "units": "%", "decimals": 2,
              "definition": "Relative humidity of the air 2 m above the ground.",
              "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
 }
@@ -417,6 +417,25 @@ def scan_data(data, y0, y1, var_ids=None) -> list[dict]:
     return out
 
 
+def climate_from_means(body) -> dict:
+    """Climate and ranked questions from the long-term means the page already has (no fetch, ~1 ms).
+
+    Lets the questions appear as soon as the first points arrive instead of after the whole area is in.
+    """
+    raw = body.get("means")
+    if not isinstance(raw, dict):
+        raise FetchError("Send the area's long-term means.")
+    known = variables()
+    means = {}
+    for k, v in raw.items():
+        if k in known and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+            means[k] = float(v)
+    if "T2M" not in means:
+        raise FetchError("Need at least the mean air temperature to read the climate.")
+    pts = clean_points(body.get("points")) if body.get("points") else []
+    return ranked_questions(pts, means)
+
+
 def quick_scan(body) -> dict:
     body = {**body, "var_id": body.get("var_id") or next(iter(variables()))}
     pts, land, data, var_id, y0, y1, months = area_data(body)
@@ -600,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(run_analysis(body))
             if self.path == "/api/crosscheck":
                 return self.send_json(cross_check(body))
+            if self.path == "/api/climate":
+                return self.send_json(climate_from_means(body))
             if self.path == "/api/scan":
                 return self.send_json(quick_scan(body))
             if self.path == "/api/explain":

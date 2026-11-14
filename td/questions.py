@@ -25,7 +25,7 @@ CATALOG = {
              "why": "In warmer winters more of the precipitation falls as rain instead of snow."},
     "snowcover": {"label": "Is the snow cover getting thinner?", "primary": "SNODP", "linked": "T2M",
                   "why": "Warmer months melt snow sooner."},
-    "rain": {"label": "Is rainfall changing?", "primary": "PRECTOTCORR", "linked": "GWETTOP",
+    "rain": {"label": "Is rain or snowfall changing?", "primary": "PRECTOTCORR", "linked": "GWETTOP",
              "why": "Rain is what refills the soil, so the two should move together."},
     "drying": {"label": "Is the land drying out?", "primary": "GWETTOP", "linked": "T2M",
                "why": "Rising heat is a common reason soils dry."},

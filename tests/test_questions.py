@@ -32,3 +32,17 @@ def test_before_data_default_and_every_question_valid():
     assert relevant_questions(None) == ["hotter", "rain", "drying"]
     for q in CATALOG.values():
         assert q["primary"] != q["linked"]
+
+
+def test_climate_endpoint_from_means_is_instant_and_validated():
+    import pytest
+
+    from td.fetch import FetchError
+    from web import server
+
+    out = server.climate_from_means({"means": WINNIPEG})
+    assert out["climate"]["type"] == "cold" and out["questions"][0]["id"] == "snowcover"
+    out = server.climate_from_means({"means": {**RIYADH, "EVIL": "x", "RH2M": float("nan")}})
+    assert out["climate"]["type"] == "arid"
+    with pytest.raises(FetchError):
+        server.climate_from_means({"means": {"PRECTOTCORR": 1.0}})
