@@ -205,11 +205,12 @@ def point_summary(body) -> dict:
     (lat, lon), = clean_points([[body.get("lat"), body.get("lon")]])
     y0, y1 = config.FIRST_YEAR, config.LAST_YEAR
     df = fetch_point(lat, lon, y0, y1)
+    elevation = df.attrs.get("elevation_m")   # read before reindex, which may drop attrs
     months = pd.date_range(f"{y0}-01-01", f"{y1}-12-01", freq="MS")
     df = df.reindex(months)
     first = df.dropna(how="all").index
     return {
-        "lat": lat, "lon": lon, "land": bool(is_land(df)),
+        "lat": lat, "lon": lon, "land": bool(is_land(df)), "elevation_m": num(elevation),
         "years": [y0, y1],
         "months": int(df.notna().any(axis=1).sum()),
         "first": first[0].strftime("%Y-%m") if len(first) else None,
@@ -436,6 +437,44 @@ def explain_case(body) -> dict:
     return out
 
 
+# ------------------------------------------------------------------ highland vs lowland (jury remark, step 6)
+
+MIN_RELIEF_M = 500   # below this, the area is flat enough for one trend
+
+
+def elevation_split(land: dict, months, var_id: str) -> dict | None:
+    """Split the land points at their median elevation and test each half, when the area has real relief."""
+    from td.analyze import compare
+
+    elev = {pt: df.attrs.get("elevation_m") for pt, df in land.items()}
+    elev = {pt: e for pt, e in elev.items() if e is not None}
+    if len(elev) < 4:
+        return None
+    lo_e, hi_e = min(elev.values()), max(elev.values())
+    if hi_e - lo_e < MIN_RELIEF_M:
+        return {"applies": False, "range_m": [round(lo_e), round(hi_e)],
+                "sentence": f"Your points lie between {lo_e:.0f} m and {hi_e:.0f} m above sea level, "
+                            "so one trend describes the area."}
+    cut = float(np.median(list(elev.values())))
+    high = {pt: land[pt] for pt, e in elev.items() if e >= cut}
+    low = {pt: land[pt] for pt, e in elev.items() if e < cut}
+    if len(high) < 2 or len(low) < 2:
+        return None
+    try:
+        res_h = analyze(area_mean(high).reindex(months)[var_id], var_id)
+        res_l = analyze(area_mean(low).reindex(months)[var_id], var_id)
+    except (ValueError, KeyError):
+        return None
+    mean_h = float(np.mean([elev[p] for p in high]))
+    mean_l = float(np.mean([elev[p] for p in low]))
+    sentence = compare(res_h, res_l, f"Higher ground (about {mean_h:.0f} m)", f"lower ground (about {mean_l:.0f} m)")
+    group = lambda r, n, m, pts: {"points": n, "mean_elevation_m": round(m), "slope_decade": num(r["slope_decade"]),  # noqa: E731
+                                  "ci_decade": num(r["ci_decade"]), "tier": r["tier"],
+                                  "latlon": [[lat, lon] for lat, lon in pts]}
+    return {"applies": True, "cut_m": round(cut), "range_m": [round(lo_e), round(hi_e)], "sentence": sentence,
+            "high": group(res_h, len(high), mean_h, high), "low": group(res_l, len(low), mean_l, low)}
+
+
 def run_analysis(body) -> dict:
     pts, land, data, var_id, y0, y1, months = area_data(body)
     vars_ = variables()
@@ -473,6 +512,7 @@ def run_analysis(body) -> dict:
         "region_type": region_type(bbox(pts)),
         "link": link,
         "zones": zones,
+        "elevation": elevation_split(land, months, var_id),
         "figures": {"anomaly": figure_json(trend_figure(series, res, view="anomaly")),
                     "raw": figure_json(trend_figure(series, res, view="raw"))},
         "series": {"month": [d.strftime("%Y-%m") for d in series.index], "value": [num(v) for v in series]},

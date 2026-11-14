@@ -59,3 +59,34 @@ def test_crosscheck_variable_without_second_source(one_land_point):
 def test_crosscheck_bad_request_is_a_fetch_error():
     with pytest.raises(FetchError):
         server.cross_check({"points": [], "var_id": "T2M"})
+
+
+# ---------------------------------------------------------------- highland vs lowland (jury remark)
+
+def _land(elev, slope, seed):
+    df = pd.DataFrame({"T2M": sample_series("T2M", slope_decade=slope, seed=seed),
+                       "PRECTOTCORR": sample_series("PRECTOTCORR", slope_decade=0.0, seed=seed + 50),
+                       "GWETTOP": sample_series("GWETTOP", slope_decade=0.0, seed=seed + 90)})
+    df.attrs["elevation_m"] = elev
+    return df
+
+
+MONTHS = pd.date_range("1981-01-01", "2025-12-01", freq="MS", name="month")
+
+
+def test_elevation_split_finds_faster_warming_mountains():
+    land = {(36.0 + i * 0.5, 10.0): _land(2500.0, 0.9, i) for i in range(3)}
+    land.update({(30.0 + i * 0.5, 10.0): _land(100.0, 0.1, 10 + i) for i in range(3)})
+    out = server.elevation_split(land, MONTHS, "T2M")
+    assert out["applies"] and out["high"]["points"] == 3 and out["low"]["points"] == 3
+    assert "Higher ground" in out["sentence"] and "faster" in out["sentence"]
+
+
+def test_flat_area_says_one_trend_fits():
+    land = {(36.0 + i * 0.5, 10.0): _land(100.0 + 20 * i, 0.3, i) for i in range(4)}
+    out = server.elevation_split(land, MONTHS, "T2M")
+    assert out["applies"] is False and "one trend" in out["sentence"]
+
+
+def test_too_few_points_or_no_elevation_skips():
+    assert server.elevation_split({(36.0, 10.0): _land(None, 0.3, 1)}, MONTHS, "T2M") is None

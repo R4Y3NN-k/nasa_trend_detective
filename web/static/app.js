@@ -313,7 +313,8 @@ function pointTooltip(lat, lon, d) {
   if (!d.land) return `${head}<br>Sea (topsoil wetness saturated): skipped in the average`;
   const rows = Object.keys(S.meta.variables).filter((v) => v in d.means)
     .map((v) => `${esc(S.meta.variables[v].name)}: <strong>${esc(valueText(v, d.means[v]))}</strong>`).join('<br>');
-  return `${head} · land<br>${rows}<br><span style="color:#5A5B60">Mean ${d.first} to ${d.last} · ${d.months} months</span>`;
+  const elev = d.elevation_m !== null && d.elevation_m !== undefined ? ` · ${Math.round(d.elevation_m)} m` : '';
+  return `${head} · land${elev}<br>${rows}<br><span style="color:#5A5B60">Mean ${d.first} to ${d.last} · ${d.months} months</span>`;
 }
 
 function renderPdStatus() {
@@ -536,6 +537,21 @@ function explainCard() {
     <p class="m-0 text-[11px] text-muted">${by}</p></section>`;
 }
 
+// Jury remark: a mountain area can trend differently from the lowland around it.
+function elevationCard() {
+  const E = S.result && S.result.elevation;
+  if (!E) return '';
+  if (!E.applies) return `<p class="m-0 text-[13px] text-muted">⛰️ ${esc(E.sentence)}</p>`;
+  const v = S.result.variable, d = v.decimals ?? 2, u = v.units || '';
+  const row = (name, g) => `<div class="flex justify-between gap-2 text-[13px]"><span class="text-charcoal">${name} · ${g.points} points, about ${g.mean_elevation_m} m</span>
+    <span class="font-semibold text-ink whitespace-nowrap">${fmt(g.slope_decade, d)} ${esc(u)}/decade · ${esc(g.tier)}</span></div>`;
+  return `<section class="flex flex-col gap-2 px-3.5 py-3 rounded-lg border border-line bg-white">
+    <div class="flex items-center gap-2"><span aria-hidden="true">⛰️</span><h2 class="m-0 text-[15px] font-bold text-ink">Uplands vs lowlands</h2></div>
+    <p class="m-0 text-[13px] leading-relaxed text-charcoal">${esc(E.sentence)}</p>
+    <div class="flex flex-col gap-1 pt-1 border-t border-line">${row('Higher', E.high)}${row('Lower', E.low)}</div>
+    <p class="m-0 text-[12px] text-muted">Your points range from ${E.range_m[0]} m to ${E.range_m[1]} m; split at ${E.cut_m} m (NASA POWER grid-cell elevation).</p></section>`;
+}
+
 function crossCard() {
   const C = S.cross;
   const wrap = (cls, icon, title, body) => `<section aria-live="polite" class="flex flex-col gap-2 px-3.5 py-3 rounded-lg border ${cls}">
@@ -693,6 +709,7 @@ function renderVerdict() {
       <div class="flex justify-between text-[11px] text-muted"><span>${fmt(-m, d)}</span><span>0 · Sen's slope ${fmt(r.sen_decade, d)}</span><span>${fmt(m, d)}</span></div>
     </div>
     ${crossCard()}
+    ${elevationCard()}
     <div role="tablist" aria-label="Details" class="flex gap-1 border-b border-[#E6E6E3]">${tabs}</div>
     <div>${tabBody}</div>
   </div>`;

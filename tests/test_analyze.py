@@ -207,3 +207,27 @@ def test_agreement_on_real_analyses():
     c = analyze(sample_series("T2M", slope_decade=-0.3, seed=6), "T2M")
     assert analyze_module.agreement(a, b) == "agree"
     assert analyze_module.agreement(a, c) == "disagree"
+
+
+# ---------------------------------------------------------------- compare (step 6)
+
+def _cres(slope, lo, hi):
+    return {"var_id": "T2M", "slope_decade": slope, "ci_decade": (lo, hi)}
+
+
+def test_compare_faster_only_when_intervals_do_not_overlap():
+    s = analyze_module.compare(_cres(0.6, 0.5, 0.7), _cres(0.2, 0.1, 0.3), "Higher ground", "lower ground")
+    assert "faster" in s and "+0.60" in s and "+0.20" in s
+    s = analyze_module.compare(_cres(0.1, 0.0, 0.2), _cres(0.4, 0.3, 0.5), "Higher ground", "lower ground")
+    assert "slower" in s
+
+
+def test_compare_overlap_is_similar_and_opposite_directions_named():
+    assert "similar" in analyze_module.compare(_cres(0.3, 0.1, 0.5), _cres(0.2, 0.0, 0.4), "A", "B")
+    assert "opposite" in analyze_module.compare(_cres(0.3, 0.2, 0.4), _cres(-0.3, -0.4, -0.2), "A", "B")
+
+
+def test_compare_on_real_analyses():
+    fast = analyze(sample_series("T2M", slope_decade=0.8, seed=2), "T2M")
+    slow = analyze(sample_series("T2M", slope_decade=0.0, seed=3), "T2M")
+    assert "faster" in analyze_module.compare(fast, slow, "Mountains", "lowlands")

@@ -181,7 +181,26 @@ def correlate(a, b) -> dict:
 
 
 def compare(sub_res, whole_res, sub_name, whole_name) -> str:
-    raise NotImplementedError  # step 6
+    """One plain sentence comparing two trends of the same variable (a part vs the whole, or highland vs lowland).
+
+    "Faster" or "slower" only when the two 95% intervals do not overlap; otherwise the rates are called similar,
+    because the difference could be chance.
+    """
+    info = _var_info(sub_res["var_id"])
+    dec, units = info["decimals"], info["units"]
+    a, b = sub_res["slope_decade"], whole_res["slope_decade"]
+    rate = lambda x: f"{x:+.{dec}f} {units}".strip()  # noqa: E731
+    lo_a, hi_a = sub_res["ci_decade"]
+    lo_b, hi_b = whole_res["ci_decade"]
+    both = f"({rate(a)} vs {rate(b)} per decade)"
+    if hi_a < lo_b or hi_b < lo_a:
+        if np.sign(a) != np.sign(b) and a != 0 and b != 0:
+            return (f"{sub_name} and {whole_name} change in opposite directions {both}; "
+                    "the difference is larger than chance would explain.")
+        word = "faster" if abs(a) > abs(b) else "slower"
+        return f"{sub_name} changes {word} than {whole_name} {both}; the difference is larger than chance would explain."
+    return (f"{sub_name} and {whole_name} change at a similar rate {both}; "
+            "the difference is within the uncertainty.")
 
 
 def agreement(res_a, res_b) -> str:
