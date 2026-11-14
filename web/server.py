@@ -10,6 +10,7 @@ server fetches exactly those points, averages the land ones and runs the same te
 API
     GET  /api/meta                     years, variables
     POST /api/area     {points}        region type + questions ranked for it
+    POST /api/point    {lat, lon}      one NASA POWER cell: land/sea, 1981-2025 mean of each variable
     POST /api/analyze  {points, var_id, linked, years}
                                        verdict, numbers, Plotly figures, per-point info, zones
 """
@@ -170,6 +171,25 @@ def fetch_points(pts, y0, y1) -> dict:
     return frames
 
 
+def point_summary(body) -> dict:
+    """What NASA POWER recorded at one grid cell over the full record: land or sea, and the mean of each variable."""
+    (lat, lon), = clean_points([[body.get("lat"), body.get("lon")]])
+    y0, y1 = config.FIRST_YEAR, config.LAST_YEAR
+    df = fetch_point(lat, lon, y0, y1)
+    months = pd.date_range(f"{y0}-01-01", f"{y1}-12-01", freq="MS")
+    df = df.reindex(months)
+    first = df.dropna(how="all").index
+    return {
+        "lat": lat, "lon": lon, "land": bool(is_land(df)),
+        "years": [y0, y1],
+        "months": int(df.notna().any(axis=1).sum()),
+        "first": first[0].strftime("%Y-%m") if len(first) else None,
+        "last": first[-1].strftime("%Y-%m") if len(first) else None,
+        "means": {col: num(df[col].mean()) for col in df.columns},
+        "missing": {col: int(df[col].isna().sum()) for col in df.columns},
+    }
+
+
 def num(v):
     if v is None:
         return None
@@ -304,6 +324,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self.read_body()
             if self.path == "/api/area":
                 return self.send_json(ranked_questions(clean_points(body.get("points")) if body.get("points") else []))
+            if self.path == "/api/point":
+                return self.send_json(point_summary(body))
             if self.path == "/api/analyze":
                 return self.send_json(run_analysis(body))
             return self.send_json({"error": "Not found"}, 404)
