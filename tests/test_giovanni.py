@@ -60,3 +60,19 @@ def test_missing_login_is_a_clear_error(monkeypatch, tmp_path):
     monkeypatch.setattr(giovanni, "_load_env_file", lambda path=None: None)
     with pytest.raises(giovanni.GiovanniError, match="Earthdata Login"):
         giovanni._client()
+
+
+AIRS_CSV = """Title:,Area-Averaged Time Series
+time,mean_AIRS3STM_7_0_SurfAirTemp_{p}
+2003-01-01 00:00:00,{a}
+2003-02-01 00:00:00,{b}
+"""
+
+
+def test_airs_averages_day_and_night_and_converts_to_celsius(monkeypatch):
+    fake = {"AIRS3STM_7_0_SurfAirTemp_A": AIRS_CSV.format(p="A", a=300.15, b=302.15),
+            "AIRS3STM_7_0_SurfAirTemp_D": AIRS_CSV.format(p="D", a=290.15, b=292.15)}
+    monkeypatch.setattr(giovanni, "_run_giovanni", lambda spec, box, a, b: fake[spec["variable"]])
+    s = giovanni.fetch_series_giovanni("AIRS_T", (7.5, 30.2, 11.6, 37.5), 2003, 2003)
+    assert list(s.round(6)) == [22.0, 24.0]                  # (300.15 + 290.15) / 2 - 273.15
+    assert s.attrs["units"] == "°C" and "AIRS" in s.attrs["source"]

@@ -177,3 +177,33 @@ def test_sample_box_data_shape_and_opposite_rain_trends():
     north = analyze(bd.point_data[max(bd.point_data)]["PRECTOTCORR"], "PRECTOTCORR")
     south = analyze(bd.point_data[min(bd.point_data)]["PRECTOTCORR"], "PRECTOTCORR")
     assert north["slope_decade"] < 0 < south["slope_decade"]
+
+
+# ---------------------------------------------------------------- agreement (step 7)
+
+def _res(slope, tier):
+    return {"slope_decade": slope, "tier": tier}
+
+
+def test_agreement_same_direction_both_strong_agree():
+    assert analyze_module.agreement(_res(0.3, "significant"), _res(0.2, "suggestive")) == "agree"
+    assert analyze_module.agreement(_res(-0.3, "suggestive"), _res(-0.1, "suggestive")) == "agree"
+
+
+def test_agreement_opposite_with_one_significant_disagree():
+    assert analyze_module.agreement(_res(0.3, "significant"), _res(-0.2, "none")) == "disagree"
+
+
+def test_agreement_weak_or_missing_is_single():
+    assert analyze_module.agreement(_res(0.3, "significant"), None) == "single"
+    assert analyze_module.agreement(None, _res(0.3, "significant")) == "single"
+    assert analyze_module.agreement(_res(0.3, "significant"), _res(0.1, "none")) == "single"
+    assert analyze_module.agreement(_res(0.3, "suggestive"), _res(-0.1, "suggestive")) == "single"
+
+
+def test_agreement_on_real_analyses():
+    a = analyze(sample_series("T2M", slope_decade=0.3, seed=0), "T2M")
+    b = analyze(sample_series("T2M", slope_decade=0.3, seed=5), "T2M")
+    c = analyze(sample_series("T2M", slope_decade=-0.3, seed=6), "T2M")
+    assert analyze_module.agreement(a, b) == "agree"
+    assert analyze_module.agreement(a, c) == "disagree"

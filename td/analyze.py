@@ -179,4 +179,18 @@ def compare(sub_res, whole_res, sub_name, whole_name) -> str:
 
 
 def agreement(res_a, res_b) -> str:
-    raise NotImplementedError  # step 7
+    """Two independent datasets, same variable: do they tell the same story?
+
+    agree    = same direction and both at least suggestive
+    disagree = opposite directions and at least one of them significant
+    single   = only one source, or the evidence is too weak to say either way
+    """
+    if res_a is None or res_b is None:
+        return "single"
+    sa, sb = np.sign(res_a["slope_decade"]), np.sign(res_b["slope_decade"])
+    strong = ("significant", "suggestive")
+    if sa != 0 and sa == sb and res_a["tier"] in strong and res_b["tier"] in strong:
+        return "agree"
+    if sa != 0 and sb != 0 and sa != sb and "significant" in (res_a["tier"], res_b["tier"]):
+        return "disagree"
+    return "single"

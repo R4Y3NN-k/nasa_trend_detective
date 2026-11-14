@@ -1,5 +1,5 @@
 # SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team
-"""Second NASA source for rain: GPM IMERG area averages via Giovanni (harmony-py). Owner: A. Step 7.
+"""Second NASA sources via Giovanni (harmony-py): GPM IMERG rain and AIRS surface air temperature. Owner: A. Step 7.
 
 Follows NASA's GES DISC notebook "How to Access the Giovanni Area-Averaged Time Series ... Using
 Python" (nasa/gesdisc-tutorials): a harmony Request with a BBox, average="area", format="text/csv".
@@ -35,6 +35,18 @@ GIOVANNI_VARIABLES = {
         "version": "07",
         "native_units": "mm/hr",
         "to_units": ("mm/day", 24.0),     # match PRECTOTCORR (mm/day)
+        "label": "GPM IMERG (satellites + rain gauges)",
+    },
+    # AIRS on NASA's Aqua satellite (from Sep 2002). Mean of the ~1:30 pm (A) and ~1:30 am (D) passes,
+    # close to a daily mean, to compare with T2M (MERRA-2 reanalysis): an independent check on temperature.
+    "AIRS_T": {
+        "variables": ["AIRS3STM_7_0_SurfAirTemp_A", "AIRS3STM_7_0_SurfAirTemp_D"],
+        "short_name": "AIRS3STM",
+        "version": "7.0",
+        "native_units": "K",
+        "to_units": ("°C", 1.0),
+        "offset": -273.15,
+        "label": "AIRS (Aqua satellite, day and night passes)",
     },
 }
 ATTEMPTS = 2
@@ -135,20 +147,16 @@ def parse_giovanni_csv(text: str) -> pd.Series:
 
 # ------------------------------------------------------------------ public
 
-def fetch_series_giovanni(var_id: str, box, start_year: int, end_year: int) -> pd.Series:
-    """Monthly area-averaged series for a Giovanni variable, in the units of its POWER twin."""
-    spec = GIOVANNI_VARIABLES.get(var_id)
-    if spec is None:
-        raise GiovanniError(f"No Giovanni variable configured for {var_id!r}.")
-    box = tuple(round(float(v), 4) for v in box)
-    key = cache.make_key("giovanni-area-mean", spec["variable"], box, start_year, end_year)
+def _fetch_raw(spec: dict, variable: str, box, start_year: int, end_year: int) -> pd.Series:
+    """One Giovanni variable, native units, cached."""
+    key = cache.make_key("giovanni-area-mean", variable, box, start_year, end_year)
     hit = cache.get(key)
     if hit is None:
         start, stop = pd.Timestamp(f"{start_year}-01-01"), pd.Timestamp(f"{end_year}-12-31 23:59:59")
         errors = []
         for _ in range(ATTEMPTS):
             try:
-                text = _run_giovanni(spec, box, start, stop)
+                text = _run_giovanni({**spec, "variable": variable}, box, start, stop)
                 break
             except GiovanniError:
                 raise
@@ -157,13 +165,26 @@ def fetch_series_giovanni(var_id: str, box, start_year: int, end_year: int) -> p
         else:
             raise GiovanniError(f"Giovanni failed {ATTEMPTS} times; using one source only. Last error: {errors[-1]}")
         raw = parse_giovanni_csv(text)
-        hit = {"variable": spec["variable"], "units": spec["native_units"],
+        hit = {"variable": variable, "units": spec["native_units"],
                "values": {d.strftime("%Y-%m"): float(v) for d, v in raw.items()}}
         cache.put(key, hit)
-    units, factor = spec["to_units"]
-    s = pd.Series(hit["values"], dtype="float64") * factor
+    s = pd.Series(hit["values"], dtype="float64")
     s.index = pd.to_datetime(s.index, format="%Y-%m")
+    return s
+
+
+def fetch_series_giovanni(var_id: str, box, start_year: int, end_year: int) -> pd.Series:
+    """Monthly area-averaged series for a Giovanni variable, in the units of its POWER twin."""
+    spec = GIOVANNI_VARIABLES.get(var_id)
+    if spec is None:
+        raise GiovanniError(f"No Giovanni variable configured for {var_id!r}.")
+    box = tuple(round(float(v), 4) for v in box)
+    names = spec.get("variables") or [spec["variable"]]
+    parts = [_fetch_raw(spec, v, box, start_year, end_year) for v in names]
+    raw = pd.concat(parts, axis=1).mean(axis=1, skipna=False) if len(parts) > 1 else parts[0]
+    units, factor = spec["to_units"]
+    s = (raw.dropna() * factor + spec.get("offset", 0.0)).sort_index()
     s.index.name = "month"
     s.name = var_id
-    s.attrs.update(units=units, source=f"GPM IMERG via Giovanni ({spec['variable']})")
-    return s.sort_index()
+    s.attrs.update(units=units, source=f"{spec.get('label', var_id)} via Giovanni ({', '.join(names)})")
+    return s

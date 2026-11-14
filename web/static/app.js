@@ -43,6 +43,7 @@ const S = {
   years: [1981, 2025],
   screen: 'pick',             // 'pick' | 'loading' | 'verdict'
   result: null, error: null,
+  cross: null,                // second-dataset check: {status: 'loading'|'ok'|'error', data|error}
   tab: 'series', view: 'anomaly',
   capped: false,
   pd: new Map(),              // key -> NASA POWER data for that cell: {status: 'queued'|'loading'|'ok'|'error', ...}
@@ -416,14 +417,48 @@ async function investigate() {
     S.result = await api('/api/analyze', { points: [...S.picked.values()], var_id: primary, linked, why, years: S.years });
     S.screen = 'verdict'; S.tab = 'series'; S.view = 'anomaly';
     drawZones();
+    loadCrossCheck();
   } catch (err) {
     S.screen = 'pick'; S.error = err.message;
   }
   renderPanel(); renderPoints();
 }
 
+// The second dataset (Giovanni) can take a while, so the verdict shows first and this card fills in after.
+async function loadCrossCheck() {
+  const R = S.result;
+  S.cross = { status: 'loading' };
+  try {
+    const data = await api('/api/crosscheck', { points: [...S.picked.values()], var_id: R.var_id, years: R.years });
+    if (S.result === R) S.cross = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.cross = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R) renderPanel();
+}
+
+function crossCard() {
+  const C = S.cross;
+  const wrap = (cls, icon, title, body) => `<section aria-live="polite" class="flex flex-col gap-2 px-3.5 py-3 rounded-lg border ${cls}">
+    <div class="flex items-center gap-2"><span aria-hidden="true">${icon}</span><h2 class="m-0 text-[15px] font-bold text-ink">${title}</h2></div>${body}</section>`;
+  if (!C || C.status === 'loading') {
+    return wrap('border-line bg-white', '<svg class="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#E6E6E3" stroke-width="3"/><path d="M21 12a9 9 0 0 0-9-9" stroke="#046460" stroke-width="3" stroke-linecap="round"/></svg>',
+      'Cross-checking with a second NASA dataset…', '<p class="m-0 text-[13px] text-muted">Asking Giovanni for the same variable from another instrument. This can take a minute the first time.</p>');
+  }
+  if (C.status === 'error') return wrap('border-line bg-land', 'ℹ️', 'Cross-check unavailable', `<p class="m-0 text-[13px] text-charcoal">${esc(C.error)}</p>`);
+  const D = C.data;
+  const look = { agree: ['border-teal-edge bg-teal-soft', '✅'], disagree: ['border-[#F0D9AE] bg-amber-soft', '⚠️'] }[D.state] || ['border-line bg-land', 'ℹ️'];
+  const rows = (D.sources || []).map((s) => `<div class="flex justify-between gap-2 text-[13px]"><span class="text-charcoal">${esc(s.label)}</span>
+    <span class="font-semibold text-ink whitespace-nowrap">${fmt(s.slope_decade, S.result.variable.decimals ?? 2)} ${esc(S.result.variable.units || '')}/decade · ${esc(s.tier)}</span></div>`).join('');
+  return wrap(look[0], look[1], esc(D.headline), `
+    <p class="m-0 text-[13px] leading-relaxed text-charcoal">${esc(D.detail)}</p>
+    ${rows ? `<div class="flex flex-col gap-1 pt-1 border-t border-line">${rows}</div>` : ''}
+    ${D.figure ? '<div id="cross-chart" class="w-full"></div>' : ''}
+    ${D.note ? `<p class="m-0 text-[12px] text-muted">${esc(D.note)}</p>` : ''}`);
+}
+
 function backToPick() {
-  S.screen = 'pick'; S.result = null;
+  S.screen = 'pick'; S.result = null; S.cross = null;
   zonesLayer.clearLayers();
   if (lasso) lasso.addTo(map);
   renderPanel(); renderPoints();
@@ -539,10 +574,10 @@ function renderVerdict() {
     <nav aria-label="Case" class="flex flex-wrap gap-1.5 text-[13px]">
       ${[`${R.points.length} point${R.points.length === 1 ? '' : 's'}`, v.name, `${R.years[0]}–${R.years[1]}`].map((t) => `<button type="button" data-back class="px-2.5 py-1 rounded-full bg-land hover:bg-[#E9E8E3]">${esc(t)}</button>`).join('')}
     </nav>
-    <div class="flex flex-col gap-2">
-      <span class="self-start text-xs font-extrabold tracking-[1.5px] px-2.5 py-1 border-2 rounded uppercase ${stamp[1]}">${stamp[0]}</span>
-      <h1 class="m-0 text-[26px] leading-tight font-extrabold">${esc(R.words.headline)}</h1>
-      <p class="m-0 text-[15px] leading-snug text-charcoal">${chg}</p>
+    <div class="flex flex-col gap-2.5">
+      <h1 class="m-0 text-[26px] leading-tight font-extrabold text-ink">${esc(R.words.headline)}</h1>
+      <span class="self-start text-xs font-extrabold tracking-[1.2px] px-2.5 py-1 border-2 rounded-full uppercase ${stamp[1]}">${stamp[0]}</span>
+      <p class="m-0 text-[15px] leading-relaxed text-charcoal">${chg}</p>
     </div>
     <div class="grid grid-cols-2 gap-2">
       ${light('Straight-line test', 'OLS, Newey-West', r.p_ttest)}
@@ -557,6 +592,7 @@ function renderVerdict() {
       </div>
       <div class="flex justify-between text-[11px] text-muted"><span>${fmt(-m, d)}</span><span>0 · Sen's slope ${fmt(r.sen_decade, d)}</span><span>${fmt(m, d)}</span></div>
     </div>
+    ${crossCard()}
     <div role="tablist" aria-label="Details" class="flex gap-1 border-b border-[#E6E6E3]">${tabs}</div>
     <div>${tabBody}</div>
   </div>`;
@@ -578,6 +614,10 @@ function renderVerdict() {
   if (S.tab === 'series') {
     const fig = R.figures[S.view];
     Plotly.react('chart', fig.data, { ...fig.layout, autosize: true }, { displayModeBar: false, responsive: true });
+  }
+  if (S.cross && S.cross.status === 'ok' && S.cross.data.figure && $('cross-chart')) {
+    const cf = S.cross.data.figure;
+    Plotly.react('cross-chart', cf.data, { ...cf.layout, autosize: true }, { displayModeBar: false, responsive: true });
   }
 }
 
