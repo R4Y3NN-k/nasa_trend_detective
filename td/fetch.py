@@ -130,17 +130,33 @@ def parse_power(js: dict) -> pd.DataFrame:
     df = pd.DataFrame(cols).sort_index()
     df[df <= FILL_VALUE + 0.5] = np.nan
     df.index.name = "month"
+    coords = (js.get("geometry") or {}).get("coordinates") or []
+    elev = coords[2] if len(coords) > 2 else None
+    df.attrs["elevation_m"] = float(elev) if elev is not None and elev > FILL_VALUE + 0.5 else None
     return df
 
 
 def fetch_point(lat: float, lon: float, start_year: int, end_year: int) -> pd.DataFrame:
-    """Monthly data for one point; the raw POWER answer is cached, so each point is fetched once."""
+    """Monthly data for one point; the raw POWER answer is cached, so each point is fetched once.
+
+    df.attrs["elevation_m"] holds the MERRA-2 cell's mean elevation in metres (None if POWER sent none).
+    """
     key = cache.make_key("power-monthly-point", lat, lon, start_year, end_year, POWER_PARAMS)
     js = cache.get(key)
     if js is None:
         js = _request_power(lat, lon, start_year, end_year)
         cache.put(key, js)
     return parse_power(js)
+
+
+def _keep_attrs(new: pd.DataFrame, old: pd.DataFrame) -> pd.DataFrame:
+    new.attrs.update(old.attrs)
+    return new
+
+
+def elevations(point_data: dict) -> dict:
+    """{(lat, lon): elevation in metres or None} for BoxData.point_data, e.g. to split mountains from lowlands."""
+    return {pt: df.attrs.get("elevation_m") for pt, df in point_data.items()}
 
 
 def is_land(df: pd.DataFrame) -> bool:
@@ -202,5 +218,5 @@ def fetch_box(box, start_year: int, end_year: int, progress=None) -> BoxData:
         points_total=len(pts),
         points_used=len(land),
         points=[(lat, lon, (lat, lon) in land) for lat, lon in pts],
-        point_data={pt: df.reindex(months) for pt, df in land.items()},
+        point_data={pt: _keep_attrs(df.reindex(months), df) for pt, df in land.items()},
     )

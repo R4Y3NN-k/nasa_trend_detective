@@ -76,3 +76,29 @@ def test_airs_averages_day_and_night_and_converts_to_celsius(monkeypatch):
     s = giovanni.fetch_series_giovanni("AIRS_T", (7.5, 30.2, 11.6, 37.5), 2003, 2003)
     assert list(s.round(6)) == [22.0, 24.0]                  # (300.15 + 290.15) / 2 - 273.15
     assert s.attrs["units"] == "°C" and "AIRS" in s.attrs["source"]
+
+
+def test_nearby_boxes_and_other_years_reuse_one_download(monkeypatch):
+    calls = []
+    monkeypatch.setattr(giovanni, "_run_giovanni", lambda spec, box, a, b: calls.append(box) or FAKE_CSV)
+    assert giovanni.area_box((7.5, 30.2, 11.6, 37.5)) == (7.0, 30.0, 12.0, 38.0)
+    a = giovanni.fetch_series_giovanni("IMERG", (7.5, 30.2, 11.6, 37.5), 2000, 2000)
+    b = giovanni.fetch_series_giovanni("IMERG", (7.2, 30.4, 11.9, 37.1), 1998, 2025)   # drawn a bit differently
+    assert calls == [(7.0, 30.0, 12.0, 38.0)] and list(a) == list(b)
+    assert giovanni.fetch_series_giovanni("IMERG", (7.5, 30.2, 11.6, 37.5), 2001, 2005).empty   # years cut out
+
+
+def test_quota_uses_an_earthdata_token(monkeypatch):
+    monkeypatch.setenv("EARTHDATA_TOKEN", "tok")
+    seen = {}
+
+    class R:
+        status_code, text = 200, "0.12\n"
+
+    def get(url, headers, timeout):
+        seen.update(url=url, auth=headers["Authorization"])
+        return R()
+
+    monkeypatch.setattr(giovanni.requests, "get", get)
+    assert giovanni.quota() == "0.12"
+    assert seen == {"url": giovanni.QUOTA_URL, "auth": "Bearer tok"}

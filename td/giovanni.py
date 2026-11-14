@@ -7,7 +7,9 @@ Giovanni answers with a CSV: a header block, then "time,mean_<variable>".
 
 Needs an Earthdata Login: EARTHDATA_USERNAME and EARTHDATA_PASSWORD (or EARTHDATA_TOKEN) in the
 environment or in .env (gitignored). Every result is cached, so each request costs quota once
-(check the monthly quota at https://api.giovanni.earthdata.nasa.gov/quota).
+(quota() reads https://api.giovanni.earthdata.nasa.gov/quota). Each variable is fetched once over its whole
+record for the box rounded out to whole degrees, so any year range and slightly different boxes reuse
+the cache, and scripts/prefetch_demo.py --giovanni can warm it for the demo.
 If Giovanni fails twice the call raises GiovanniError (a FetchError), so the app can carry on with a
 single source.
 
@@ -18,11 +20,13 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import math
 import os
 import tempfile
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from td import cache
 from td.fetch import FetchError
@@ -81,6 +85,32 @@ def _client():
     if user and pwd:
         return Client(auth=(user, pwd))
     raise GiovanniError("Giovanni needs an Earthdata Login: set EARTHDATA_USERNAME and EARTHDATA_PASSWORD in .env.")
+
+
+QUOTA_URL = "https://api.giovanni.earthdata.nasa.gov/quota"
+EDL_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
+
+
+def _bearer_token() -> str:
+    """EARTHDATA_TOKEN, or a token Earthdata Login issues for EARTHDATA_USERNAME / EARTHDATA_PASSWORD."""
+    _load_env_file()
+    if os.environ.get("EARTHDATA_TOKEN"):
+        return os.environ["EARTHDATA_TOKEN"]
+    user, pwd = os.environ.get("EARTHDATA_USERNAME"), os.environ.get("EARTHDATA_PASSWORD")
+    if not (user and pwd):
+        raise GiovanniError("Giovanni needs an Earthdata Login: set EARTHDATA_USERNAME and EARTHDATA_PASSWORD in .env.")
+    r = requests.post(EDL_TOKEN_URL, auth=(user, pwd), timeout=60)
+    if r.status_code != 200:
+        raise GiovanniError(f"Earthdata Login refused the token request (HTTP {r.status_code}).")
+    return r.json()["access_token"]
+
+
+def quota() -> str:
+    """This login's monthly Giovanni compute quota, as Giovanni reports it (0 to 1)."""
+    r = requests.get(QUOTA_URL, headers={"Authorization": f"Bearer {_bearer_token()}"}, timeout=60)
+    if r.status_code != 200:
+        raise GiovanniError(f"Giovanni quota check failed (HTTP {r.status_code}).")
+    return r.text.strip()
 
 
 # ------------------------------------------------------------------ request
@@ -147,12 +177,22 @@ def parse_giovanni_csv(text: str) -> pd.Series:
 
 # ------------------------------------------------------------------ public
 
-def _fetch_raw(spec: dict, variable: str, box, start_year: int, end_year: int) -> pd.Series:
-    """One Giovanni variable, native units, cached."""
-    key = cache.make_key("giovanni-area-mean", variable, box, start_year, end_year)
+def area_box(box) -> tuple[float, float, float, float]:
+    """The box rounded outward to whole degrees.
+
+    Boxes drawn a little differently around the same place then share one Giovanni job and one cache
+    entry, so a prefetched demo area is found again in the live demo.
+    """
+    west, south, east, north = (float(v) for v in box)
+    return (float(math.floor(west)), float(math.floor(south)), float(math.ceil(east)), float(math.ceil(north)))
+
+
+def _fetch_raw(spec: dict, variable: str, box) -> pd.Series:
+    """One Giovanni variable over its whole record, native units, cached (years are cut out later)."""
+    key = cache.make_key("giovanni-area-mean-full", variable, box)
     hit = cache.get(key)
     if hit is None:
-        start, stop = pd.Timestamp(f"{start_year}-01-01"), pd.Timestamp(f"{end_year}-12-31 23:59:59")
+        start, stop = pd.Timestamp("1980-01-01"), pd.Timestamp.now().normalize()   # clipped to the record
         errors = []
         for _ in range(ATTEMPTS):
             try:
@@ -178,10 +218,11 @@ def fetch_series_giovanni(var_id: str, box, start_year: int, end_year: int) -> p
     spec = GIOVANNI_VARIABLES.get(var_id)
     if spec is None:
         raise GiovanniError(f"No Giovanni variable configured for {var_id!r}.")
-    box = tuple(round(float(v), 4) for v in box)
+    box = area_box(box)
     names = spec.get("variables") or [spec["variable"]]
-    parts = [_fetch_raw(spec, v, box, start_year, end_year) for v in names]
+    parts = [_fetch_raw(spec, v, box) for v in names]
     raw = pd.concat(parts, axis=1).mean(axis=1, skipna=False) if len(parts) > 1 else parts[0]
+    raw = raw.loc[str(start_year):str(end_year)]
     units, factor = spec["to_units"]
     s = (raw.dropna() * factor + spec.get("offset", 0.0)).sort_index()
     s.index.name = "month"
