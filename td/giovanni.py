@@ -71,7 +71,9 @@ def _load_env_file(path: Path = ENV_FILE) -> None:
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+            value = value.strip().strip('"').strip("'")
+            if value and not value.startswith("PASTE_YOUR"):   # template placeholders count as not set
+                os.environ.setdefault(key.strip(), value)
 
 
 def _client():
