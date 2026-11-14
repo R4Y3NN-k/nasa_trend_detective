@@ -562,7 +562,7 @@ function crossCard() {
   }
   if (C.status === 'error') return wrap('border-line bg-land', 'ℹ️', 'Cross-check unavailable', `<p class="m-0 text-[13px] text-charcoal">${esc(C.error)}</p>`);
   const D = C.data;
-  const look = { agree: ['border-teal-edge bg-teal-soft', '✅'], disagree: ['border-[#F0D9AE] bg-amber-soft', '⚠️'] }[D.state] || ['border-line bg-land', 'ℹ️'];
+  const look = { agree: ['border-teal-edge bg-teal-soft', '✅'], disagree: ['border-[#F0D9AE] bg-amber-soft', '⚠️'] }[D.look || D.state] || ['border-line bg-land', 'ℹ️'];
   const rows = (D.sources || []).map((s) => `<div class="flex justify-between gap-2 text-[13px]"><span class="text-charcoal">${esc(s.label)}</span>
     <span class="font-semibold text-ink whitespace-nowrap">${fmt(s.slope_decade, S.result.variable.decimals ?? 2)} ${esc(S.result.variable.units || '')}/decade · ${esc(s.tier)}</span></div>`).join('');
   return wrap(look[0], look[1], esc(D.headline), `

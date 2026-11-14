@@ -303,6 +303,14 @@ def cross_check_figure(a: pd.Series, b: pd.Series, name_a: str, name_b: str, uni
     return out
 
 
+def rate_note(res_a: dict, res_b: dict) -> str:
+    """Same direction, but how far apart are the two rates? Judged by whether the 95% intervals overlap."""
+    (lo_a, hi_a), (lo_b, hi_b) = res_a["ci_decade"], res_b["ci_decade"]
+    if hi_a < lo_b or hi_b < lo_a:
+        return "Their rates differ by more than chance would explain, so trust the direction more than the exact rate."
+    return "The rates are not identical, but the gap is within the uncertainty."
+
+
 def cross_check(body) -> dict:
     """Same variable from a second NASA dataset, over the years both cover; never raises for Giovanni trouble."""
     from td.analyze import agreement
@@ -341,24 +349,37 @@ def cross_check(body) -> dict:
     rate = lambda x: f"{x:+.{d}f} {u}".strip()  # noqa: E731
     word = lambda s: "rising" if s > 0 else "falling"  # noqa: E731
     name = info["name"].lower()
+    short = label.split(" (")[0]
+    how = {"significant": "a clear", "suggestive": "a possible", "none": "no clear"}
+    look = state
     if state == "agree":
         headline = "Two NASA datasets agree"
         detail = (f"Both show {name} {word(res_a['slope_decade'])} over {span}: "
-                  f"{rate(res_a['slope_decade'])} per decade ({PRIMARY_LABEL}) and "
-                  f"{rate(res_b['slope_decade'])} per decade ({label}).")
+                  f"{rate(res_a['slope_decade'])} per decade (MERRA-2) and {rate(res_b['slope_decade'])} per decade "
+                  f"({short}). {rate_note(res_a, res_b)}")
     elif state == "disagree":
         headline = "The two datasets disagree"
-        detail = (f"Over {span}, {PRIMARY_LABEL} shows {name} {word(res_a['slope_decade'])} but {label} shows it "
+        detail = (f"Over {span}, MERRA-2 shows {name} {word(res_a['slope_decade'])} but {short} shows it "
                   f"{word(res_b['slope_decade'])}. Treat this verdict with caution.")
+    elif res_a["tier"] == "none" and res_b["tier"] == "none":
+        headline = "Both datasets: no clear trend"
+        look = "agree"
+        detail = (f"Over {span}, neither MERRA-2 ({rate(res_a['slope_decade'])} per decade) nor {short} "
+                  f"({rate(res_b['slope_decade'])} per decade) shows a clear change, so the two tell the same story.")
     else:
         headline = "The second dataset can't confirm this yet"
-        detail = (f"Over {span}, the trend is {res_a['tier']} in {PRIMARY_LABEL} ({rate(res_a['slope_decade'])} per decade) "
-                  f"and {res_b['tier']} in {label} ({rate(res_b['slope_decade'])} per decade). "
+        detail = (f"Over {span}, MERRA-2 shows {how[res_a['tier']]} trend ({rate(res_a['slope_decade'])} per decade) "
+                  f"and {short} shows {how[res_b['tier']]} trend ({rate(res_b['slope_decade'])} per decade). "
                   "Neither clearly confirms nor contradicts the other.")
     if r["r"] is not None:
-        detail += f" Their month-to-month ups and downs move together (r = {r['r']:.2f})."
+        detail += f" Month to month, the two move together (r = {r['r']:.2f})."
+    first_year = body.get("years", [config.FIRST_YEAR])[0]
+    if int(common[0].year) > int(first_year):
+        detail += (f" These rates cover only {span}, the years both datasets have, so they can differ from the "
+                   f"{first_year}–{common[-1].year} rate above.")
     return {
-        "state": state, "headline": headline, "detail": detail, "note": INDEPENDENCE_NOTE.get(other_id, ""),
+        "state": state, "look": look, "headline": headline, "detail": detail,
+        "note": INDEPENDENCE_NOTE.get(other_id, ""),
         "years": [int(common[0].year), int(common[-1].year)], "months": int(len(common)),
         "sources": [
             {"label": PRIMARY_LABEL, "slope_decade": num(res_a["slope_decade"]), "ci_decade": num(res_a["ci_decade"]),
