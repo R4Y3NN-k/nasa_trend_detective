@@ -81,10 +81,16 @@ function setMode(mode) {
     b.setAttribute('aria-pressed', String(on));
     b.className = 'w-11 h-11 flex items-center justify-center border-b border-line ' + (on ? 'bg-charcoal text-white' : 'bg-white text-ink hover:bg-land');
   }
-  $('hint-text').textContent = drawing
-    ? 'Draw around the area you want to investigate, or switch to points and tap them'
-    : `Tap grid points to add or remove them (up to ${S.meta ? S.meta.max_points : 30})`;
+  updateHint();
   renderPoints();
+}
+
+function updateHint() {
+  const n = S.picked.size;
+  if (S.screen === 'verdict') $('hint-text').textContent = `Verdict for the ${n} point${n === 1 ? '' : 's'} shown · Back to change the area`;
+  else if (S.screen === 'loading') $('hint-text').textContent = 'Fetching NASA POWER data…';
+  else if (S.mode === 'draw') $('hint-text').textContent = 'Draw around the area you want to investigate, or switch to points and tap them';
+  else $('hint-text').textContent = `Tap grid points to add or remove them (up to ${S.meta ? S.meta.max_points : 30})`;
 }
 
 function renderPoints() {
@@ -134,7 +140,7 @@ function renderPoints() {
     path = [map.mouseEventToLatLng(e)];
     if (lasso) { lasso.remove(); lasso = null; }
     line = L.polyline(path, { color: '#046460', weight: 3, dashArray: '8 6', interactive: false }).addTo(map);
-    el.setPointerCapture(e.pointerId);
+    try { el.setPointerCapture(e.pointerId); } catch (_) { /* pen/synthetic pointers: drawing still works */ }
     e.preventDefault();
   });
   el.addEventListener('pointermove', (e) => {
@@ -199,7 +205,7 @@ let flashTimer = null;
 function flash(text) {
   $('hint-text').textContent = text;
   clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => setMode(S.mode), 2600);
+  flashTimer = setTimeout(() => { flashTimer = null; updateHint(); }, 2600);
 }
 
 // ---------------------------------------------------------------- panel: pick screen
@@ -472,6 +478,7 @@ function downloadCsv() {
 
 function renderPanel() {
   if (!S.meta) return;
+  if (!flashTimer) updateHint();
   if (S.screen === 'loading') return renderLoading();
   if (S.screen === 'verdict') return renderVerdict();
   return renderPick();

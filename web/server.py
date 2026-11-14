@@ -184,9 +184,10 @@ def num(v):
 
 
 def figure_json(fig) -> dict:
-    fig.update_layout(height=270, margin=dict(l=8, r=8, t=36, b=8), title_font_size=13,
+    # The panel already names the variable, so drop the title and put the legend under the plot.
+    fig.update_layout(height=280, margin=dict(l=8, r=8, t=8, b=8), title_text="",
                       font=dict(family="Archivo, Helvetica, Arial, sans-serif", size=11),
-                      legend=dict(font=dict(size=10)))
+                      legend=dict(font=dict(size=10), orientation="h", yanchor="top", y=-0.1, x=0, xanchor="left"))
     return json.loads(pio.to_json(fig))
 
 
