@@ -28,7 +28,11 @@ def _var_label(var_id: str) -> tuple[str, str]:
         from td.config import VARIABLES
     except ImportError:
         VARIABLES = {}
-    info = VARIABLES.get(var_id, {})
+    info = VARIABLES.get(var_id)
+    if not info:
+        from td.analyze import _var_info  # built-in names for the POWER variables until config lands
+
+        info = _var_info(var_id)
     return info.get("name", var_id), info.get("units", "")
 
 
@@ -139,35 +143,62 @@ def box_figure(points: list, box) -> go.Figure:
     return fig
 
 
-def trend_map_figure(grid_df: pd.DataFrame, var_id: str) -> go.Figure:
+TREND_SCALE = [[0, FALLING], [0.5, "#f7f7f7"], [1, RISING]]
+DIMMED = "#dcdcdc"
+
+
+def zone_scale(grid_df: pd.DataFrame, var_id: str) -> tuple[pd.Series, str, float]:
+    """(value per point, unit text, vmax) shared by the zone map and the zone tree: one colour scale for both.
+
+    Value = % per decade when every point has one (relative variables), else the slope per decade.
+    """
+    _, units = _var_label(var_id)
+    use_pct = "pct_decade" in grid_df and grid_df["pct_decade"].notna().all() and len(grid_df) > 0
+    value = (grid_df["pct_decade"] if use_pct else grid_df["slope_decade"]).astype(float)
+    unit_txt = "% per decade" if use_pct else f"{units} per decade".strip()
+    vmax = float(np.nanmax(np.abs(value))) if len(grid_df) and np.isfinite(value).any() else 1.0
+    return value, unit_txt, vmax or 1.0
+
+
+def trend_map_figure(grid_df: pd.DataFrame, var_id: str, highlight=None) -> go.Figure:
     """Opposite-trends zone map: one marker per land point, red rising, blue falling.
 
     Marker colour = slope per decade (diverging, centred on zero); a black dot marks points that
     stay significant after the Benjamini-Hochberg FDR correction (grid_df.significant).
+    highlight (optional): the (lat, lon) points of a selected zone; the other points turn grey.
     """
-    name, units = _var_label(var_id)
+    name, _ = _var_label(var_id)
     df = grid_df.copy()
-    use_pct = "pct_decade" in df and df["pct_decade"].notna().all() and len(df) > 0
-    value = df["pct_decade"] if use_pct else df["slope_decade"]
-    unit_txt = "% per decade" if use_pct else f"{units} per decade".strip()
-    vmax = float(np.nanmax(np.abs(value))) if len(df) and np.isfinite(value).any() else 1.0
-    vmax = vmax or 1.0
+    value, unit_txt, vmax = zone_scale(df, var_id)
 
     q = df["q_fdr"] if "q_fdr" in df else pd.Series(np.nan, index=df.index)
     hover = [f"{lat:.2f}°, {lon:.2f}°<br>{v:+.3g} {unit_txt}<br>t-test p = {pt:.3f} · MK p = {pm:.3f}"
              f"<br>FDR q = {qq:.3f}{' · significant' if sig else ''}"
              for lat, lon, v, pt, pm, qq, sig in zip(df["lat"], df["lon"], value, df["p_ttest"], df["p_mk"],
                                                      q, df["significant"])]
+    df["_value"], df["_hover"] = value.to_numpy(), hover
+    if highlight is not None:
+        chosen = {(round(float(a), 3), round(float(b), 3)) for a, b in highlight}
+        df["_in"] = [(round(float(a), 3), round(float(b), 3)) in chosen for a, b in zip(df["lat"], df["lon"])]
+    else:
+        df["_in"] = True
 
     fig = go.Figure()
+    other = df[~df["_in"]]
+    if len(other):
+        fig.add_trace(go.Scattergeo(
+            lat=other["lat"], lon=other["lon"], mode="markers", name="Other zones", text=other["_hover"],
+            hovertemplate="%{text}<extra></extra>",
+            marker=dict(size=22, symbol="square", color=DIMMED, line=dict(color="#bbb", width=0.5))))
+    shown = df[df["_in"]]
     fig.add_trace(go.Scattergeo(
-        lat=df["lat"], lon=df["lon"], mode="markers", name="Trend per point", text=hover,
+        lat=shown["lat"], lon=shown["lon"], mode="markers",
+        name="Selected zone" if len(other) else "Trend per point", text=shown["_hover"],
         hovertemplate="%{text}<extra></extra>",
-        marker=dict(size=22, symbol="square", color=value, cmin=-vmax, cmax=vmax,
-                    colorscale=[[0, FALLING], [0.5, "#f7f7f7"], [1, RISING]],
-                    line=dict(color="#999", width=0.5),
+        marker=dict(size=22, symbol="square", color=shown["_value"], cmin=-vmax, cmax=vmax,
+                    colorscale=TREND_SCALE, line=dict(color="#555" if len(other) else "#999", width=0.8),
                     colorbar=dict(title=dict(text=unit_txt, side="right"), thickness=12))))
-    sig = df[df["significant"].astype(bool)]
+    sig = df[df["significant"].astype(bool) & df["_in"]]
     if len(sig):
         fig.add_trace(go.Scattergeo(lat=sig["lat"], lon=sig["lon"], mode="markers", hoverinfo="skip",
                                     marker=dict(size=6, color="black"), name="Significant (FDR 10%)"))
@@ -178,6 +209,31 @@ def trend_map_figure(grid_df: pd.DataFrame, var_id: str) -> go.Figure:
     fig.update_layout(title=dict(text=f"{name}: where it rises and where it falls", x=0, font=dict(size=16)),
                       height=460, margin=dict(l=0, r=0, t=50, b=0),
                       legend=dict(orientation="h", yanchor="bottom", y=0, x=0))
+    return fig
+
+
+def cluster_tree_figure(tree_df: pd.DataFrame, var_id: str, vmax: float, unit_txt: str,
+                        selected: str | None = None) -> go.Figure:
+    """Trend-zone tree as a vertical icicle: all points on top, then zones, sub-zones and single points.
+
+    Width = number of points; colour = the zone's average trend on the zone map's scale (pass the map's vmax
+    from zone_scale), so tree and map read as one picture. selected = node id to zoom into.
+    """
+    t = tree_df
+    short = [f"{v:+.1f}%" if "%" in unit_txt else f"{v:+.2g}" for v in t["value"]]
+    fig = go.Figure(go.Icicle(
+        ids=t["id"], parents=t["parent"], labels=t["label"], values=t["n_points"], branchvalues="total",
+        customdata=np.column_stack([short, t["sentence"]]),
+        texttemplate="<b>%{label}</b><br>%{customdata[0]}",
+        hovertemplate="%{customdata[1]}<extra></extra>",
+        marker=dict(colors=t["value"], colorscale=TREND_SCALE, cmin=-vmax, cmax=vmax, showscale=False,
+                    line=dict(color="white", width=2)),
+        tiling=dict(orientation="v"), maxdepth=3, level=selected or t["id"].iloc[0],
+        root=dict(color="#f7f7f7"), textfont=dict(size=13), insidetextfont=dict(color="#222"),
+    ))
+    name, _ = _var_label(var_id)
+    fig.update_layout(title=dict(text=f"Trend zones · colour: {name} ({unit_txt})", x=0, font=dict(size=16)),
+                      height=520, margin=dict(l=0, r=0, t=50, b=0))
     return fig
 
 

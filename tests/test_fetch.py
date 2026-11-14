@@ -140,3 +140,11 @@ def test_errors_are_fetch_errors(fake_power, monkeypatch):
     monkeypatch.setattr(fetch.requests, "get", lambda url, params, timeout: FakeResponse(503))
     with pytest.raises(FetchError, match="did not answer"):
         fetch_box((8.0, 33.0, 8.4, 33.4), 1981, 1982)
+
+
+def test_elevation_is_kept_per_point(fake_power):
+    df = parse_power(power_json(36.5, 10.0))
+    assert df.attrs["elevation_m"] == 50.0
+    bd = fetch_box((10.0, 36.3, 13.0, 36.7), 1981, 1982)
+    elev = fetch.elevations(bd.point_data)
+    assert set(elev) == set(bd.point_data) and all(v == 50.0 for v in elev.values())

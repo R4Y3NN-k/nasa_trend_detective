@@ -20,8 +20,8 @@ from folium.plugins import Draw
 from streamlit_folium import st_folium
 
 from td import config
-from td.analyze import agreement, analyze, compare, correlate, verdict
-from td.charts import box_figure, trend_figure, trend_map_figure
+from td.analyze import _var_info, agreement, analyze, compare, correlate, verdict
+from td.charts import box_figure, cluster_tree_figure, trend_figure, trend_map_figure, zone_scale
 from td.fetch import FetchError, fetch_box
 
 CUSTOM = "__custom__"
@@ -36,7 +36,7 @@ st.set_page_config(page_title="Trend Detective", page_icon="🔎", layout="wide"
 # ---------------------------------------------------------------- helpers (config, formatting)
 
 def var_info(var_id: str) -> dict:
-    info = dict(config.VARIABLES.get(var_id, {}))
+    info = dict(config.VARIABLES.get(var_id) or _var_info(var_id))  # built-in names until config lands
     info.setdefault("name", var_id)
     info.setdefault("units", "")
     info.setdefault("decimals", 2)
@@ -133,6 +133,17 @@ def zone_grid(box: tuple, start_year: int, end_year: int, var_id: str):
 
 
 @st.cache_data(show_spinner=False)
+def zone_tree(box: tuple, start_year: int, end_year: int, features: tuple, color_var: str):
+    """cluster_tree() of the zone grids, or None when a grid is missing or there are too few points."""
+    from td.trendmap import cluster_tree
+
+    grids = {v: zone_grid(box, start_year, end_year, v) for v in dict.fromkeys((color_var, *features))}
+    if any(g is None or g.empty for g in grids.values()):
+        return None
+    return cluster_tree(grids, features=list(features), color_var=color_var)
+
+
+@st.cache_data(show_spinner=False)
 def second_source(var_id: str, box: tuple, start_year: int, end_year: int):
     """(series, None) or (None, reason). Never raises: the app must work when Giovanni is down."""
     try:
@@ -147,7 +158,8 @@ def second_source(var_id: str, box: tuple, start_year: int, end_year: int):
 
 # ---------------------------------------------------------------- state
 
-WIDGET_KEYS = ("region_id", "west", "south", "east", "north", "years", "mode", "question_id", "var_id", "view")
+WIDGET_KEYS = ("region_id", "west", "south", "east", "north", "years", "mode", "question_id", "var_id", "view",
+               "cluster_vars", "zone")
 
 
 def init_state():
@@ -452,7 +464,11 @@ def zone_map(box, y0, y1, var_id, res):
     grid = zone_grid(box, y0, y1, var_id)
     if grid is None or grid.empty:
         return
-    st.plotly_chart(trend_map_figure(grid, var_id), width="stretch", config={"scrollZoom": False})
+    tree = zone_controls(box, y0, y1, var_id, len(grid))
+    if tree is None or tree.empty:
+        st.plotly_chart(trend_map_figure(grid, var_id), width="stretch", config={"scrollZoom": False})
+    else:
+        zone_tree_and_map(grid, tree, var_id)
     rising = int((grid["significant"] & (grid["slope_decade"] > 0)).sum())
     falling = int((grid["significant"] & (grid["slope_decade"] < 0)).sum())
     st.caption(f"Each square is one NASA POWER grid point: red rising, blue falling. A black dot means the trend "
@@ -460,6 +476,56 @@ def zone_map(box, y0, y1, var_id, res):
                f"Significant: {rising} rising, {falling} falling.")
     if rising and falling and res["tier"] == "none":
         st.info("Parts of the region move in opposite directions, which can cancel out in the regional average.")
+
+
+def zone_controls(box, y0, y1, var_id, n_points):
+    """'Group points by' (the expert's parameters) and 'Zone' (drill-down) above the tree and map.
+
+    The selectbox drives both views: a click inside a Plotly icicle zooms it in the browser but does not
+    reach Streamlit, so it cannot drive the map.
+    """
+    from td.trendmap import MIN_POINTS_TO_CLUSTER, ROOT
+
+    if var_id not in POWER_VARS or n_points < MIN_POINTS_TO_CLUSTER:
+        return None
+    ss = st.session_state
+    if not ss.get("cluster_vars") or any(v not in POWER_VARS for v in ss.cluster_vars):
+        ss.cluster_vars = [var_id]
+    st.markdown("#### Trend zones: where it rises and where it falls")
+    c1, c2 = st.columns([2, 3], gap="large")
+    c1.multiselect("Group points by the trend of", POWER_VARS, key="cluster_vars",
+                   format_func=lambda v: var_info(v)["name"],
+                   help="Grid points whose trends look alike are grouped into zones (Ward hierarchical "
+                        "clustering), then sub-zones, down to single points.")
+    tree = zone_tree(box, y0, y1, tuple(ss.cluster_vars) or (var_id,), var_id)
+    if tree is None or tree.empty:
+        return None
+    labels = dict(zip(tree["id"], zip(tree["label"], tree["depth"], tree["n_points"])))
+    if ss.get("zone") not in labels:
+        ss.zone = ROOT
+    c2.selectbox("Zone", list(labels), key="zone",
+                 format_func=lambda i: " " * labels[i][1] + labels[i][0]
+                 + (f" ({labels[i][2]} points)" if labels[i][2] > 1 else ""))
+    return tree
+
+
+def zone_tree_and_map(grid, tree, var_id):
+    """Tree on the left (control), map on the right (result), one colour scale and one colour bar."""
+    from td.trendmap import ROOT
+
+    zone = st.session_state.zone
+    node = tree.set_index("id").loc[zone]
+    _, unit_txt, vmax = zone_scale(grid, var_id)
+    left, right = st.columns([2, 3], gap="large")
+    with left:
+        st.plotly_chart(cluster_tree_figure(tree, var_id, vmax, unit_txt, selected=zone), width="stretch")
+        st.caption("Width = number of grid points. Colour = the average trend of a zone's points, on the "
+                   "map's scale. Zones group points whose trends look alike: a description, not a test.")
+    with right:
+        st.markdown(f"**{node['sentence']}**")
+        highlight = None if zone == ROOT else node["members"]
+        st.plotly_chart(trend_map_figure(grid, var_id, highlight=highlight), width="stretch",
+                        config={"scrollZoom": False})
 
 
 def variable_card(var_id):

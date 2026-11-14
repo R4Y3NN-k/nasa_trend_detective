@@ -13,6 +13,14 @@ API
     POST /api/point    {lat, lon}      one NASA POWER cell: land/sea, 1981-2025 mean of each variable
     POST /api/analyze  {points, var_id, linked, years}
                                        verdict, numbers, Plotly figures, per-point info, zones
+    POST /api/crosscheck {points, var_id, years}
+                                       same variable from a second NASA dataset (AIRS / GPM IMERG via
+                                       Giovanni) over the shared years, and whether the two agree
+    POST /api/scan       {points, years}
+                                       every variable tested on the area (drives the suggested questions)
+    POST /api/explain    {points, var_id, question_id, years, cross}
+                                       plain-language summary + next questions (Gemini or a template;
+                                       only numbers the app computed are allowed)
 """
 from __future__ import annotations
 
@@ -211,11 +219,11 @@ def figure_json(fig) -> dict:
     return json.loads(pio.to_json(fig))
 
 
-def run_analysis(body) -> dict:
+def area_data(body):
+    """Validate the request and return (pts, land frames, area-mean data, var_id, y0, y1, months)."""
     pts = clean_points(body.get("points"))
     var_id = str(body.get("var_id", ""))
-    vars_ = variables()
-    if var_id not in vars_:
+    if var_id not in variables():
         raise FetchError(f"Unknown variable {var_id!r}.")
     try:
         y0, y1 = (int(y) for y in body.get("years", [config.FIRST_YEAR, config.LAST_YEAR]))
@@ -229,7 +237,182 @@ def run_analysis(body) -> dict:
     if not land:
         raise FetchError("All picked points are sea. Pick points over land.")
     months = pd.date_range(f"{y0}-01-01", f"{y1}-12-01", freq="MS", name="month")
-    data = area_mean(land).reindex(months)
+    return pts, land, area_mean(land).reindex(months), var_id, y0, y1, months
+
+
+# ------------------------------------------------------------------ cross-check (step 7)
+
+# Same quantity, second independent NASA dataset (Giovanni). Used until config.VARIABLES has cross_check.
+SECOND_SOURCE = {"T2M": "AIRS_T", "PRECTOTCORR": "IMERG"}
+PRIMARY_LABEL = "MERRA-2 reanalysis (NASA POWER)"
+INDEPENDENCE_NOTE = {
+    "AIRS_T": "AIRS measures temperature from space; MERRA-2 is a weather model that also uses AIRS radiances, "
+              "so the two are partly, not fully, independent.",
+    "IMERG": "IMERG combines several satellites with rain gauges; MERRA-2's rain is corrected with gauge data too, "
+             "so the two are partly, not fully, independent.",
+}
+
+
+def second_source_for(var_id: str) -> str | None:
+    return (config.VARIABLES.get(var_id, {}) or {}).get("cross_check") or SECOND_SOURCE.get(var_id)
+
+
+def annual_anomalies(series: pd.Series) -> pd.Series:
+    """Calendar-year mean of the monthly anomalies, only years with at least 9 months."""
+    from td.analyze import anomalies
+
+    a = anomalies(series.dropna())
+    g = a.groupby(a.index.year)
+    return g.mean()[g.count() >= 9]
+
+
+def cross_check_figure(a: pd.Series, b: pd.Series, name_a: str, name_b: str, units: str) -> dict:
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    for s, name, col, dash in ((a, name_a, "#046460", None), (b, name_b, "#C2410C", "dash")):
+        ya = annual_anomalies(s)
+        fig.add_trace(go.Scatter(x=list(ya.index), y=list(ya.values), mode="lines+markers", name=name,
+                                 line=dict(color=col, width=2.5, dash=dash), marker=dict(size=5)))
+    fig.add_hline(y=0, line=dict(color="#9A9B9F", width=1))
+    fig.update_layout(template="plotly_white", yaxis_title=f"Difference from usual ({units})", xaxis_title=None)
+    out = figure_json(fig)
+    out["layout"]["height"] = 240
+    return out
+
+
+def cross_check(body) -> dict:
+    """Same variable from a second NASA dataset, over the years both cover; never raises for Giovanni trouble."""
+    from td.analyze import agreement
+
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    info = variables()[var_id]
+    other_id = second_source_for(var_id)
+    if not other_id:
+        return {"state": "none", "headline": "No second dataset for this variable yet",
+                "detail": f"{info['name']} comes from one NASA dataset only, so it cannot be cross-checked yet."}
+    try:
+        from td.giovanni import GIOVANNI_VARIABLES, fetch_series_giovanni
+
+        other = fetch_series_giovanni(other_id, bbox(list(land)), y0, y1)
+        label = GIOVANNI_VARIABLES[other_id].get("label", other_id)
+    except FetchError as exc:
+        return {"state": "single", "headline": "Second dataset not reachable right now",
+                "detail": f"The verdict above uses one dataset only. {exc}"}
+    except Exception as exc:  # missing library, network, login: the verdict must still stand
+        traceback.print_exc()
+        return {"state": "single", "headline": "Second dataset not reachable right now",
+                "detail": f"The verdict above uses one dataset only ({type(exc).__name__})."}
+
+    primary = data[var_id].dropna()
+    common = primary.index.intersection(other.index)
+    if len(common) < 60:
+        return {"state": "single", "headline": "Too little overlap to cross-check",
+                "detail": f"{label} and {PRIMARY_LABEL} share only {len(common)} months for these years "
+                          "(at least 60 are needed)."}
+    a, b = primary.loc[common], other.loc[common]
+    res_a, res_b = analyze(a, var_id), analyze(b, var_id)
+    state = agreement(res_a, res_b)
+    r = correlate(a, b)
+    d, u = info.get("decimals", 2), info.get("units", "")
+    span = f"{common[0].year}–{common[-1].year}"
+    rate = lambda x: f"{x:+.{d}f} {u}".strip()  # noqa: E731
+    word = lambda s: "rising" if s > 0 else "falling"  # noqa: E731
+    name = info["name"].lower()
+    if state == "agree":
+        headline = "Two NASA datasets agree"
+        detail = (f"Both show {name} {word(res_a['slope_decade'])} over {span}: "
+                  f"{rate(res_a['slope_decade'])} per decade ({PRIMARY_LABEL}) and "
+                  f"{rate(res_b['slope_decade'])} per decade ({label}).")
+    elif state == "disagree":
+        headline = "The two datasets disagree"
+        detail = (f"Over {span}, {PRIMARY_LABEL} shows {name} {word(res_a['slope_decade'])} but {label} shows it "
+                  f"{word(res_b['slope_decade'])}. Treat this verdict with caution.")
+    else:
+        headline = "The second dataset can't confirm this yet"
+        detail = (f"Over {span}, the trend is {res_a['tier']} in {PRIMARY_LABEL} ({rate(res_a['slope_decade'])} per decade) "
+                  f"and {res_b['tier']} in {label} ({rate(res_b['slope_decade'])} per decade). "
+                  "Neither clearly confirms nor contradicts the other.")
+    if r["r"] is not None:
+        detail += f" Their month-to-month ups and downs move together (r = {r['r']:.2f})."
+    return {
+        "state": state, "headline": headline, "detail": detail, "note": INDEPENDENCE_NOTE.get(other_id, ""),
+        "years": [int(common[0].year), int(common[-1].year)], "months": int(len(common)),
+        "sources": [
+            {"label": PRIMARY_LABEL, "slope_decade": num(res_a["slope_decade"]), "ci_decade": num(res_a["ci_decade"]),
+             "tier": res_a["tier"]},
+            {"label": label, "slope_decade": num(res_b["slope_decade"]), "ci_decade": num(res_b["ci_decade"]),
+             "tier": res_b["tier"]},
+        ],
+        "r": num(r["r"]),
+        "figure": cross_check_figure(a, b, "MERRA-2", label.split(" (")[0], u),
+    }
+
+
+# ------------------------------------------------------------------ quick scan + plain words (suggestions)
+
+def _rate(v, info) -> str:
+    d, u = info.get("decimals", 2), info.get("units", "")
+    if " to " in u:  # a 0-to-1 index has no unit to print
+        u = ""
+    return f"{v:+.{d}f} {u}".strip()
+
+
+def scan_data(data, y0, y1) -> list[dict]:
+    """Every variable tested on the same area: what is changing here? Each verdict is still tested in full."""
+    out = []
+    for vid, info in variables().items():
+        if vid not in data:
+            continue
+        try:
+            res = analyze(data[vid], vid)
+        except ValueError:
+            continue
+        out.append({"var_id": vid, "name": info["name"], "tier": res["tier"],
+                    "direction": "rising" if res["slope_decade"] > 0 else "falling",
+                    "rate_per_decade": _rate(res["slope_decade"], info), "years": f"{y0}–{y1}"})
+    return out
+
+
+def quick_scan(body) -> dict:
+    body = {**body, "var_id": body.get("var_id") or next(iter(variables()))}
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    return {"scan": scan_data(data, y0, y1)}
+
+
+def explain_case(body) -> dict:
+    """Facts the app computed -> plain-language summary and next questions (Gemini, or a template)."""
+    from td.explain import explain
+
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    info = variables()[var_id]
+    try:
+        res = analyze(data[var_id], var_id)
+    except ValueError as exc:
+        raise FetchError(str(exc)) from None
+    facts = {
+        "question_id": body.get("question_id"),
+        "var_id": var_id,
+        "place": f"{len(land)} land grid points picked on the map",
+        "verdict": {
+            "variable": info["name"], "headline": verdict(res)["headline"], "tier": res["tier"],
+            "rate_per_decade": _rate(res["slope_decade"], info),
+            "total_change": _rate(res["total_change"], info), "years": f"{y0}–{y1}",
+        },
+        "quick_scan": scan_data(data, y0, y1),
+    }
+    cc = body.get("cross")
+    if isinstance(cc, dict) and cc.get("state") in ("agree", "disagree", "single"):
+        facts["cross_check"] = {k: str(cc.get(k, ""))[:400] for k in ("state", "headline", "detail")}
+    qs = {q["id"]: q for q in ranked_questions(pts)["questions"]}
+    out = explain(facts, qs)
+    out["next"] = [{"id": q, "label": qs[q]["label"]} for q in out["next"] if q in qs]
+    return out
+
+
+def run_analysis(body) -> dict:
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    vars_ = variables()
     series = data[var_id]
     try:
         res = analyze(series, var_id)
@@ -328,6 +511,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(point_summary(body))
             if self.path == "/api/analyze":
                 return self.send_json(run_analysis(body))
+            if self.path == "/api/crosscheck":
+                return self.send_json(cross_check(body))
+            if self.path == "/api/scan":
+                return self.send_json(quick_scan(body))
+            if self.path == "/api/explain":
+                return self.send_json(explain_case(body))
             return self.send_json({"error": "Not found"}, 404)
         except FetchError as exc:
             return self.send_json({"error": str(exc)}, 400)
