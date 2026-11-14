@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets: keys go in .env (see .env.example)
+.env
+.netrc
+
+# Data: never commit raw NASA downloads
+data/cache/*.json
+data/cache/*.tmp
+data/*.zip
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
