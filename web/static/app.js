@@ -44,6 +44,8 @@ const S = {
   screen: 'pick',             // 'pick' | 'loading' | 'verdict'
   result: null, error: null,
   cross: null,                // second-dataset check: {status: 'loading'|'ok'|'error', data|error}
+  scan: null,                 // quick scan of every variable for the picked area: {sig, status, data}
+  explain: null,              // plain words + next questions: {status, data}
   tab: 'series', view: 'anomaly',
   capped: false,
   pd: new Map(),              // key -> NASA POWER data for that cell: {status: 'queued'|'loading'|'ok'|'error', ...}
@@ -223,7 +225,39 @@ function pumpPointData() {
 
 function pdChanged() {
   if (pdFrame) return;
-  pdFrame = requestAnimationFrame(() => { pdFrame = 0; renderPoints(); renderPdStatus(); });
+  pdFrame = requestAnimationFrame(() => { pdFrame = 0; renderPoints(); renderPdStatus(); maybeScan(); });
+}
+
+// ---------------------------------------------------------------- quick scan: what is changing in this area?
+const scanSig = () => `${[...S.picked.keys()].sort().join('|')}#${S.years.join('-')}`;
+
+function maybeScan() {
+  const c = pdCounts();
+  if (!c.total || c.pending || !c.land || S.screen !== 'pick') return;
+  const sig = scanSig();
+  if (S.scan && S.scan.sig === sig) return;
+  S.scan = { sig, status: 'loading' };
+  renderPanel();
+  api('/api/scan', { points: [...S.picked.values()], years: S.years })
+    .then((d) => { if (S.scan && S.scan.sig === sig) S.scan = { sig, status: 'ok', data: d.scan }; })
+    .catch((err) => { if (S.scan && S.scan.sig === sig) S.scan = { sig, status: 'error', error: err.message }; })
+    .finally(() => { if (S.screen === 'pick') renderPanel(); });
+}
+
+const TIER_RANK = { significant: 0, suggestive: 1, none: 2 };
+function scanFor(vid) {
+  return S.scan && S.scan.status === 'ok' && S.scan.sig === scanSig() ? S.scan.data.find((x) => x.var_id === vid) : null;
+}
+
+function scanBadge(vid) {
+  const s = scanFor(vid);
+  if (!s) return '';
+  const [txt, cls] = {
+    significant: [`Clearly ${s.direction}`, 'bg-teal-soft text-teal-dark border-teal-edge'],
+    suggestive: [`Possibly ${s.direction}`, 'bg-amber-soft text-amber-ink border-[#F0D9AE]'],
+    none: ['No clear change', 'bg-land text-charcoal border-line'],
+  }[s.tier];
+  return `<span class="self-start mt-1 text-[11px] font-bold px-2 py-0.5 rounded-full border ${cls}">${txt} · ${esc(s.rate_per_decade)}/decade</span>`;
 }
 
 function pdCounts() {
@@ -341,13 +375,20 @@ function renderPick() {
   const n = S.picked.size;
   const [y0, y1] = S.years;
   const [first, last] = S.meta.years;
-  const typeLine = S.regionType ? `Ranked for a ${esc(S.regionType)} area` : 'Common questions about climate trends';
-  const qCards = S.questions.map((q, i) => {
+  const scanned = S.questions.length && S.questions.every((q) => scanFor(q.primary));
+  const scanning = S.scan && S.scan.status === 'loading';
+  const typeLine = scanned ? 'Ordered by what is changing most in your area (quick scan of NASA data)'
+    : scanning ? 'Scanning your area for changes…'
+      : S.regionType ? `Ranked for a ${esc(S.regionType)} area` : 'Common questions about climate trends';
+  const ordered = scanned
+    ? [...S.questions].sort((a, b) => TIER_RANK[scanFor(a.primary).tier] - TIER_RANK[scanFor(b.primary).tier])
+    : S.questions;
+  const qCards = ordered.map((q, i) => {
     const sel = !S.variable && S.question === q.id;
     return `<button type="button" data-q="${esc(q.id)}" aria-pressed="${sel}"
       class="w-full flex items-center gap-3.5 min-h-[64px] px-3.5 py-3 rounded-lg text-left ${sel ? 'border-2 border-teal bg-teal-soft' : 'border border-line bg-white m-px hover:border-[#B9B9B4]'}">
       <span class="flex-none w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${sel ? 'bg-teal text-white' : 'bg-land text-charcoal'}">${i + 1}</span>
-      <span class="flex-1 flex flex-col gap-0.5"><span class="text-base font-bold">${esc(q.label)}</span><span class="text-[13px] text-charcoal">${esc(q.vars)}</span></span>
+      <span class="flex-1 flex flex-col gap-0.5"><span class="text-base font-bold">${esc(q.label)}</span><span class="text-[13px] text-charcoal">${esc(q.vars)}</span>${scanBadge(q.primary)}</span>
       <span class="font-bold text-teal ${sel ? '' : 'invisible'}" aria-hidden="true">✓</span></button>`;
   }).join('');
   const chips = Object.entries(S.meta.variables).map(([id, v]) => {
@@ -375,7 +416,7 @@ function renderPick() {
       </div>
     </section>
     <section class="flex flex-col gap-2.5">
-      <div class="flex flex-col gap-0.5"><h2 class="${H2}">Most asked here</h2><span class="text-[13px] text-muted">${typeLine}</span></div>
+      <div class="flex flex-col gap-0.5"><h2 class="${H2}">${scanned ? 'Suggested for your area' : 'Most asked here'}</h2><span class="text-[13px] text-muted">${typeLine}</span></div>
       ${qCards || '<p class="text-sm text-muted m-0">Loading questions…</p>'}
     </section>
     <section class="flex flex-col gap-2.5">
@@ -400,6 +441,7 @@ function renderPick() {
     </div>`;
 
   renderPdStatus();
+  setTimeout(maybeScan, 0);   // years or selection changed: rescan once all point data is in
   // Changing the question/variable recolours the dots by that variable's real values.
   $('panel-body').querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => { S.question = b.dataset.q; S.variable = null; renderPanel(); renderPoints(); }));
   $('panel-body').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => { S.variable = b.dataset.v; renderPanel(); renderPoints(); }));
@@ -435,6 +477,44 @@ async function loadCrossCheck() {
     if (S.result === R) S.cross = { status: 'error', error: err.message };
   }
   if (S.screen === 'verdict' && S.result === R) renderPanel();
+  loadExplain(R);
+}
+
+// Plain words + next questions, once the cross-check has settled so the text can mention it.
+async function loadExplain(R) {
+  if (S.result !== R) return;
+  S.explain = { status: 'loading' };
+  if (S.screen === 'verdict') renderPanel();
+  const cross = S.cross && S.cross.status === 'ok' ? S.cross.data : null;
+  try {
+    const data = await api('/api/explain', {
+      points: [...S.picked.values()], var_id: R.var_id, years: R.years, question_id: S.variable ? null : S.question,
+      cross: cross && { state: cross.state, headline: cross.headline, detail: cross.detail },
+    });
+    if (S.result === R) S.explain = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.explain = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R) renderPanel();
+}
+
+function explainCard() {
+  const E = S.explain;
+  if (!E || E.status === 'error') return '';
+  if (E.status === 'loading') {
+    return '<section class="px-3.5 py-3 rounded-lg bg-land text-[13px] text-muted" aria-live="polite">Writing this up in plain words…</section>';
+  }
+  const D = E.data;
+  const by = D.source === 'gemini'
+    ? 'Written by an AI model (Google Gemini) from the numbers this app computed; checked to contain no other numbers.'
+    : 'Written by the app from its own results.';
+  const next = (D.next || []).map((q) => `<button type="button" data-next="${esc(q.id)}"
+      class="min-h-[40px] px-3.5 py-2 rounded-full border border-teal text-teal text-sm font-semibold bg-white hover:bg-teal-soft">${esc(q.label)} →</button>`).join('');
+  return `<section aria-live="polite" class="flex flex-col gap-2.5 px-3.5 py-3 rounded-lg border-2 border-teal-edge bg-white">
+    <h2 class="m-0 ${H2}">In plain words</h2>
+    <p class="m-0 text-[15px] leading-relaxed text-ink">${esc(D.summary)}</p>
+    ${next ? `<div class="flex flex-col gap-1.5"><span class="text-[13px] font-bold text-charcoal">Investigate next, same area</span><div class="flex flex-wrap gap-2">${next}</div></div>` : ''}
+    <p class="m-0 text-[11px] text-muted">${by}</p></section>`;
 }
 
 function crossCard() {
@@ -458,7 +538,7 @@ function crossCard() {
 }
 
 function backToPick() {
-  S.screen = 'pick'; S.result = null; S.cross = null;
+  S.screen = 'pick'; S.result = null; S.cross = null; S.explain = null;
   zonesLayer.clearLayers();
   if (lasso) lasso.addTo(map);
   renderPanel(); renderPoints();
@@ -579,6 +659,7 @@ function renderVerdict() {
       <span class="self-start text-xs font-extrabold tracking-[1.2px] px-2.5 py-1 border-2 rounded-full uppercase ${stamp[1]}">${stamp[0]}</span>
       <p class="m-0 text-[15px] leading-relaxed text-charcoal">${chg}</p>
     </div>
+    ${explainCard()}
     <div class="grid grid-cols-2 gap-2">
       ${light('Straight-line test', 'OLS, Newey-West', r.p_ttest)}
       ${light('Rank test', 'Mann-Kendall', r.p_mk)}
@@ -608,6 +689,9 @@ function renderVerdict() {
   $('panel-body').querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { S.tab = b.dataset.tab; renderPanel(); }));
   $('panel-body').querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { S.view = b.dataset.view; renderPanel(); }));
   $('panel-body').querySelectorAll('[data-back]').forEach((b) => b.addEventListener('click', backToPick));
+  $('panel-body').querySelectorAll('[data-next]').forEach((b) => b.addEventListener('click', () => {
+    S.question = b.dataset.next; S.variable = null; S.cross = null; S.explain = null; zonesLayer.clearLayers(); investigate();
+  }));
   $('back').addEventListener('click', backToPick);
   $('new').addEventListener('click', newCase);
   $('csv').addEventListener('click', downloadCsv);

@@ -16,6 +16,11 @@ API
     POST /api/crosscheck {points, var_id, years}
                                        same variable from a second NASA dataset (AIRS / GPM IMERG via
                                        Giovanni) over the shared years, and whether the two agree
+    POST /api/scan       {points, years}
+                                       every variable tested on the area (drives the suggested questions)
+    POST /api/explain    {points, var_id, question_id, years, cross}
+                                       plain-language summary + next questions (Gemini or a template;
+                                       only numbers the app computed are allowed)
 """
 from __future__ import annotations
 
@@ -344,6 +349,67 @@ def cross_check(body) -> dict:
     }
 
 
+# ------------------------------------------------------------------ quick scan + plain words (suggestions)
+
+def _rate(v, info) -> str:
+    d, u = info.get("decimals", 2), info.get("units", "")
+    if " to " in u:  # a 0-to-1 index has no unit to print
+        u = ""
+    return f"{v:+.{d}f} {u}".strip()
+
+
+def scan_data(data, y0, y1) -> list[dict]:
+    """Every variable tested on the same area: what is changing here? Each verdict is still tested in full."""
+    out = []
+    for vid, info in variables().items():
+        if vid not in data:
+            continue
+        try:
+            res = analyze(data[vid], vid)
+        except ValueError:
+            continue
+        out.append({"var_id": vid, "name": info["name"], "tier": res["tier"],
+                    "direction": "rising" if res["slope_decade"] > 0 else "falling",
+                    "rate_per_decade": _rate(res["slope_decade"], info), "years": f"{y0}–{y1}"})
+    return out
+
+
+def quick_scan(body) -> dict:
+    body = {**body, "var_id": body.get("var_id") or next(iter(variables()))}
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    return {"scan": scan_data(data, y0, y1)}
+
+
+def explain_case(body) -> dict:
+    """Facts the app computed -> plain-language summary and next questions (Gemini, or a template)."""
+    from td.explain import explain
+
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    info = variables()[var_id]
+    try:
+        res = analyze(data[var_id], var_id)
+    except ValueError as exc:
+        raise FetchError(str(exc)) from None
+    facts = {
+        "question_id": body.get("question_id"),
+        "var_id": var_id,
+        "place": f"{len(land)} land grid points picked on the map",
+        "verdict": {
+            "variable": info["name"], "headline": verdict(res)["headline"], "tier": res["tier"],
+            "rate_per_decade": _rate(res["slope_decade"], info),
+            "total_change": _rate(res["total_change"], info), "years": f"{y0}–{y1}",
+        },
+        "quick_scan": scan_data(data, y0, y1),
+    }
+    cc = body.get("cross")
+    if isinstance(cc, dict) and cc.get("state") in ("agree", "disagree", "single"):
+        facts["cross_check"] = {k: str(cc.get(k, ""))[:400] for k in ("state", "headline", "detail")}
+    qs = {q["id"]: q for q in ranked_questions(pts)["questions"]}
+    out = explain(facts, qs)
+    out["next"] = [{"id": q, "label": qs[q]["label"]} for q in out["next"] if q in qs]
+    return out
+
+
 def run_analysis(body) -> dict:
     pts, land, data, var_id, y0, y1, months = area_data(body)
     vars_ = variables()
@@ -447,6 +513,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(run_analysis(body))
             if self.path == "/api/crosscheck":
                 return self.send_json(cross_check(body))
+            if self.path == "/api/scan":
+                return self.send_json(quick_scan(body))
+            if self.path == "/api/explain":
+                return self.send_json(explain_case(body))
             return self.send_json({"error": "Not found"}, 404)
         except FetchError as exc:
             return self.send_json({"error": str(exc)}, 400)
