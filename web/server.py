@@ -43,6 +43,7 @@ import plotly  # noqa: E402
 import plotly.io as pio  # noqa: E402
 
 from td import config  # noqa: E402
+from td import questions as QCAT  # noqa: E402
 from td.analyze import analyze, correlate, verdict  # noqa: E402
 from td.charts import trend_figure  # noqa: E402
 from td.fetch import FetchError, _snap, area_mean, fetch_point, is_land  # noqa: E402
@@ -65,21 +66,30 @@ FALLBACK_VARIABLES = {
     "GWETTOP": {"name": "Topsoil wetness", "units": "0 to 1", "decimals": 3,
                 "definition": "How wet the top 5 cm of soil is, from 0 (dry) to 1 (saturated).",
                 "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "T2M_MAX": {"name": "Hottest temperature of the month", "units": "°C", "decimals": 2,
+                "definition": "The highest air temperature (2 m above the ground) reached in each month.",
+                "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "T2M_MIN": {"name": "Coldest temperature of the month", "units": "°C", "decimals": 2,
+                "definition": "The lowest air temperature (2 m above the ground) reached in each month.",
+                "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "FROST_DAYS": {"name": "Frost days", "units": "days/month", "decimals": 2,
+                   "definition": "Number of days in the month when the air temperature drops below 0 °C.",
+                   "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "PRECSNOLAND": {"name": "Snowfall", "units": "mm/day", "decimals": 3,
+                    "definition": "Average daily snowfall over land, as millimetres of melted water.",
+                    "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "SNODP": {"name": "Snow depth", "units": "cm", "decimals": 2,
+              "definition": "Average depth of the snow lying on the ground.",
+              "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "RH2M": {"name": "Humidity", "units": "%", "decimals": 2,
+             "definition": "Relative humidity of the air 2 m above the ground.",
+             "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
 }
+# Region-aware question catalog (td/questions.py), in the {linked: {default: ...}} shape config.QUESTIONS uses.
 FALLBACK_QUESTIONS = {
-    "hotter": {"label": "Is it getting hotter?", "primary": "T2M", "linked": {"default": "PRECTOTCORR"},
-               "why_linked": {"default": "Warmer air can change how much rain falls."}},
-    "rain": {"label": "Is rainfall changing?", "primary": "PRECTOTCORR", "linked": {"default": "GWETTOP"},
-             "why_linked": {"default": "Rain is what refills the soil, so the two should move together."}},
-    "drying": {"label": "Is the land drying out?", "primary": "GWETTOP", "linked": {"default": "T2M"},
-               "why_linked": {"default": "Rising heat is a common reason soils dry."}},
-}
-# UI ranking of the questions ("most asked here") by region type.
-RELEVANCE = {
-    "arid": ["drying", "hotter", "rain"],
-    "savanna": ["rain", "hotter", "drying"],
-    "temperate": ["hotter", "rain", "drying"],
-    "polar": ["hotter", "drying", "rain"],
+    qid: {"label": q["label"], "primary": q["primary"], "linked": {"default": q["linked"]},
+          "why_linked": {"default": q["why"]}}
+    for qid, q in QCAT.CATALOG.items()
 }
 
 
@@ -123,10 +133,21 @@ def bbox(points) -> tuple[float, float, float, float]:
     return (min(lons) - 0.3125, min(lats) - 0.25, max(lons) + 0.3125, max(lats) + 0.25)
 
 
-def ranked_questions(points) -> dict:
-    rtype = region_type(bbox(points)) if points else None
+def area_means(data: pd.DataFrame) -> dict:
+    """Long-term average of each variable over the picked land points: what kind of climate is this?"""
+    return {col: num(data[col].mean()) for col in data.columns if data[col].notna().any()}
+
+
+def ranked_questions(points, means: dict | None = None) -> dict:
+    """Questions that fit the area's climate, most relevant first. Before the data is in: a short default list."""
     qs = questions()
-    order = [q for q in RELEVANCE.get(rtype, []) if q in qs] + [q for q in qs if q not in RELEVANCE.get(rtype, [])]
+    climate = QCAT.climate_type(means) if means else None
+    if config.QUESTIONS:  # team catalog (D) wins when it exists
+        rtype = region_type(bbox(points)) if points else None
+        order = list(qs)
+    else:
+        rtype = climate["type"] if climate else None
+        order = [q for q in QCAT.relevant_questions(means) if q in qs]
     names = variables()
     out = []
     for qid in order:
@@ -134,8 +155,8 @@ def ranked_questions(points) -> dict:
         linked, why = linked_for(qid, rtype)
         out.append({"id": qid, "label": q["label"], "primary": q["primary"], "linked": linked, "why": why,
                     "vars": f"{names.get(q['primary'], {}).get('name', q['primary'])}"
-                            + (f" · checked against {names.get(linked, {}).get('name', linked).lower()}" if linked else "")})
-    return {"region_type": rtype, "questions": out}
+                            + (f" · compared with {names.get(linked, {}).get('name', linked).lower()}" if linked else "")})
+    return {"region_type": rtype, "climate": climate, "questions": out}
 
 
 # ------------------------------------------------------------------ analysis
@@ -358,15 +379,15 @@ def _rate(v, info) -> str:
     return f"{v:+.{d}f} {u}".strip()
 
 
-def scan_data(data, y0, y1) -> list[dict]:
-    """Every variable tested on the same area: what is changing here? Each verdict is still tested in full."""
+def scan_data(data, y0, y1, var_ids=None) -> list[dict]:
+    """Each variable tested on the same area: what is changing here? Each verdict is still tested in full."""
     out = []
     for vid, info in variables().items():
-        if vid not in data:
+        if vid not in data or (var_ids is not None and vid not in var_ids):
             continue
         try:
             res = analyze(data[vid], vid)
-        except ValueError:
+        except Exception:  # e.g. a variable that is zero all year (no snow): nothing to scan
             continue
         out.append({"var_id": vid, "name": info["name"], "tier": res["tier"],
                     "direction": "rising" if res["slope_decade"] > 0 else "falling",
@@ -377,7 +398,9 @@ def scan_data(data, y0, y1) -> list[dict]:
 def quick_scan(body) -> dict:
     body = {**body, "var_id": body.get("var_id") or next(iter(variables()))}
     pts, land, data, var_id, y0, y1, months = area_data(body)
-    return {"scan": scan_data(data, y0, y1)}
+    ranked = ranked_questions(pts, area_means(data))
+    wanted = {q["primary"] for q in ranked["questions"]}
+    return {"scan": scan_data(data, y0, y1, wanted), **ranked}
 
 
 def explain_case(body) -> dict:
@@ -390,21 +413,24 @@ def explain_case(body) -> dict:
         res = analyze(data[var_id], var_id)
     except ValueError as exc:
         raise FetchError(str(exc)) from None
+    ranked = ranked_questions(pts, area_means(data))
+    climate = ranked.get("climate") or {}
     facts = {
         "question_id": body.get("question_id"),
         "var_id": var_id,
         "place": f"{len(land)} land grid points picked on the map",
+        "climate": climate.get("label", ""),
         "verdict": {
             "variable": info["name"], "headline": verdict(res)["headline"], "tier": res["tier"],
             "rate_per_decade": _rate(res["slope_decade"], info),
             "total_change": _rate(res["total_change"], info), "years": f"{y0}–{y1}",
         },
-        "quick_scan": scan_data(data, y0, y1),
+        "quick_scan": scan_data(data, y0, y1, {q["primary"] for q in ranked["questions"]}),
     }
     cc = body.get("cross")
     if isinstance(cc, dict) and cc.get("state") in ("agree", "disagree", "single"):
         facts["cross_check"] = {k: str(cc.get(k, ""))[:400] for k in ("state", "headline", "detail")}
-    qs = {q["id"]: q for q in ranked_questions(pts)["questions"]}
+    qs = {q["id"]: q for q in ranked["questions"]}   # in climate order: the fallback keeps it
     out = explain(facts, qs)
     out["next"] = [{"id": q, "label": qs[q]["label"]} for q in out["next"] if q in qs]
     return out

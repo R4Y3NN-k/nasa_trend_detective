@@ -30,7 +30,10 @@ from td import cache
 from td.config import MAX_POINTS, MIN_SPACING_DEG
 
 POWER_URL = "https://power.larc.nasa.gov/api/temporal/monthly/point"
-POWER_PARAMS = ("T2M", "PRECTOTCORR", "GWETTOP")
+CORE_PARAMS = ("T2M", "PRECTOTCORR", "GWETTOP")   # what fetch_box() returns (Streamlit app)
+# Extra variables let the map UI ask the questions that fit each climate (snow and frost in Canada, extreme heat
+# in Arabia). Same request, same cache entry per point: POWER returns them all in one call.
+POWER_PARAMS = CORE_PARAMS + ("T2M_MAX", "T2M_MIN", "FROST_DAYS", "PRECSNOLAND", "SNODP", "RH2M")
 FILL_VALUE = -999.0
 TIMEOUT_S = 90
 RETRIES = 3
@@ -196,7 +199,7 @@ def fetch_box(box, start_year: int, end_year: int, progress=None) -> BoxData:
     if not land:
         raise FetchError("This box has no land points (it looks like open sea). Move it over land.")
     months = pd.date_range(f"{start_year}-01-01", f"{end_year}-12-01", freq="MS", name="month")
-    data = area_mean(land).reindex(months)[list(POWER_PARAMS)]
+    data = area_mean(land).reindex(months)[list(CORE_PARAMS)]
     return BoxData(
         data=data,
         points_total=len(pts),

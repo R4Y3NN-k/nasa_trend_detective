@@ -94,7 +94,7 @@ def test_parse_skips_annual_and_fill_values():
     df = parse_power(power_json(36.5, 10.0, gap="198103"))
     assert len(df) == 24 and list(df.columns) == list(fetch.POWER_PARAMS)
     assert str(df.index[0].date()) == "1981-01-01" and np.isnan(df.loc["1981-03-01", "T2M"])
-    assert df.isna().sum().tolist() == [1, 1, 1] and df["PRECTOTCORR"].dropna().eq(1.5).all()
+    assert df.isna().sum().tolist() == [1] * len(fetch.POWER_PARAMS) and df["PRECTOTCORR"].dropna().eq(1.5).all()
 
 
 def test_land_mask():

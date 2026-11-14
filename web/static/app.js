@@ -39,6 +39,8 @@ const S = {
   mode: 'draw',               // 'draw' | 'points'
   picked: new Map(),          // key -> [lat, lon]
   questions: [], regionType: null,
+  userChose: false,           // true once the person clicks a question or variable themselves
+  climate: null,              // {type, label, reason} from the area's own NASA averages (after the scan)
   question: null, variable: null,
   years: [1981, 2025],
   screen: 'pick',             // 'pick' | 'loading' | 'verdict'
@@ -56,6 +58,12 @@ const RAMPS = {
   T2M: [[253, 231, 212], [194, 65, 12]],
   PRECTOTCORR: [[220, 232, 251], [29, 78, 216]],
   GWETTOP: [[237, 227, 209], [4, 100, 96]],
+  T2M_MAX: [[254, 226, 204], [153, 27, 27]],
+  T2M_MIN: [[219, 234, 254], [194, 65, 12]],
+  FROST_DAYS: [[224, 242, 254], [12, 74, 110]],
+  PRECSNOLAND: [[241, 245, 249], [30, 64, 175]],
+  SNODP: [[241, 245, 249], [30, 64, 175]],
+  RH2M: [[236, 253, 245], [6, 95, 70]],
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -218,7 +226,7 @@ function pumpPointData() {
     api('/api/point', { lat, lon })
       .then((d) => S.pd.set(key, { status: 'ok', ...d }))
       .catch((err) => S.pd.set(key, { status: 'error', error: err.message }))
-      .finally(() => { pdActive--; pdChanged(); pumpPointData(); });
+      .finally(() => { pdActive--; pdChanged(); pumpPointData(); setTimeout(maybeScan, 0); });  // not via rAF: hidden tabs pause it
   }
   pdChanged();
 }
@@ -239,12 +247,21 @@ function maybeScan() {
   S.scan = { sig, status: 'loading' };
   renderPanel();
   api('/api/scan', { points: [...S.picked.values()], years: S.years })
-    .then((d) => { if (S.scan && S.scan.sig === sig) S.scan = { sig, status: 'ok', data: d.scan }; })
+    .then((d) => {
+      if (!S.scan || S.scan.sig !== sig) return;
+      S.scan = { sig, status: 'ok', data: d.scan };
+      // The server ranks the questions for this area's climate (snow and frost for Canada, heat for deserts).
+      if (d.questions && d.questions.length) {
+        S.questions = d.questions;
+        S.climate = d.climate;
+        // Select this climate's top question unless the person already chose one themselves.
+        if (!S.userChose || (!S.variable && !S.questions.some((q) => q.id === S.question))) { S.question = S.questions[0].id; S.variable = null; }
+      }
+    })
     .catch((err) => { if (S.scan && S.scan.sig === sig) S.scan = { sig, status: 'error', error: err.message }; })
     .finally(() => { if (S.screen === 'pick') renderPanel(); });
 }
 
-const TIER_RANK = { significant: 0, suggestive: 1, none: 2 };
 function scanFor(vid) {
   return S.scan && S.scan.status === 'ok' && S.scan.sig === scanSig() ? S.scan.data.find((x) => x.var_id === vid) : null;
 }
@@ -330,6 +347,7 @@ function renderPdStatus() {
 
 let areaTimer = null;
 function selectionChanged() {
+  S.climate = null;           // new area: its climate is read again once its data is in
   queuePointData();
   renderPoints();
   renderPanel();
@@ -340,6 +358,7 @@ function selectionChanged() {
 async function loadQuestions() {
   try {
     const data = await api('/api/area', { points: [...S.picked.values()] });
+    if (S.climate) return renderPanel();   // the climate-ranked list from the scan is already in
     S.questions = data.questions;
     S.regionType = data.region_type;
     if (!S.variable && !S.questions.some((q) => q.id === S.question)) S.question = S.questions[0] ? S.questions[0].id : null;
@@ -375,14 +394,12 @@ function renderPick() {
   const n = S.picked.size;
   const [y0, y1] = S.years;
   const [first, last] = S.meta.years;
-  const scanned = S.questions.length && S.questions.every((q) => scanFor(q.primary));
   const scanning = S.scan && S.scan.status === 'loading';
-  const typeLine = scanned ? 'Ordered by what is changing most in your area (quick scan of NASA data)'
-    : scanning ? 'Scanning your area for changes…'
-      : S.regionType ? `Ranked for a ${esc(S.regionType)} area` : 'Common questions about climate trends';
-  const ordered = scanned
-    ? [...S.questions].sort((a, b) => TIER_RANK[scanFor(a.primary).tier] - TIER_RANK[scanFor(b.primary).tier])
-    : S.questions;
+  const typeLine = S.climate
+    ? `<strong class="text-ink">${esc(S.climate.label)}</strong> (${esc(S.climate.reason)}), so these questions come first`
+    : scanning ? 'Reading your area’s climate from NASA data…'
+      : 'Common questions about climate trends';
+  const ordered = S.questions;   // already ranked for this climate by the server
   const qCards = ordered.map((q, i) => {
     const sel = !S.variable && S.question === q.id;
     return `<button type="button" data-q="${esc(q.id)}" aria-pressed="${sel}"
@@ -391,7 +408,9 @@ function renderPick() {
       <span class="flex-1 flex flex-col gap-0.5"><span class="text-base font-bold">${esc(q.label)}</span><span class="text-[13px] text-charcoal">${esc(q.vars)}</span>${scanBadge(q.primary)}</span>
       <span class="font-bold text-teal ${sel ? '' : 'invisible'}" aria-hidden="true">✓</span></button>`;
   }).join('');
-  const chips = Object.entries(S.meta.variables).map(([id, v]) => {
+  // Variables worth picking here: those of this climate's questions (no snow chip in a desert).
+  const chipIds = S.climate ? [...new Set(S.questions.map((q) => q.primary))] : ['T2M', 'PRECTOTCORR', 'GWETTOP'];
+  const chips = Object.entries(S.meta.variables).filter(([id]) => chipIds.includes(id)).map(([id, v]) => {
     const sel = S.variable === id;
     return `<button type="button" data-v="${esc(id)}" aria-pressed="${sel}"
       class="min-h-[40px] px-3.5 py-2 rounded-full text-sm ${sel ? 'border-2 border-teal bg-teal text-white font-semibold' : 'border border-[#CCCCCC] bg-white hover:border-charcoal'}">${esc(v.name)}</button>`;
@@ -416,7 +435,7 @@ function renderPick() {
       </div>
     </section>
     <section class="flex flex-col gap-2.5">
-      <div class="flex flex-col gap-0.5"><h2 class="${H2}">${scanned ? 'Suggested for your area' : 'Most asked here'}</h2><span class="text-[13px] text-muted">${typeLine}</span></div>
+      <div class="flex flex-col gap-0.5"><h2 class="${H2}">${S.climate ? 'Suggested for your area' : 'Most asked here'}</h2><span class="text-[13px] text-muted">${typeLine}</span></div>
       ${qCards || '<p class="text-sm text-muted m-0">Loading questions…</p>'}
     </section>
     <section class="flex flex-col gap-2.5">
@@ -443,8 +462,8 @@ function renderPick() {
   renderPdStatus();
   setTimeout(maybeScan, 0);   // years or selection changed: rescan once all point data is in
   // Changing the question/variable recolours the dots by that variable's real values.
-  $('panel-body').querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => { S.question = b.dataset.q; S.variable = null; renderPanel(); renderPoints(); }));
-  $('panel-body').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => { S.variable = b.dataset.v; renderPanel(); renderPoints(); }));
+  $('panel-body').querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => { S.question = b.dataset.q; S.variable = null; S.userChose = true; renderPanel(); renderPoints(); }));
+  $('panel-body').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => { S.variable = b.dataset.v; S.userChose = true; renderPanel(); renderPoints(); }));
   $('y0').addEventListener('change', (e) => { S.years[0] = +e.target.value; if (S.years[1] - S.years[0] + 1 < S.meta.min_years) S.years[1] = Math.min(last, S.years[0] + S.meta.min_years - 1); renderPanel(); });
   $('y1').addEventListener('change', (e) => { S.years[1] = +e.target.value; if (S.years[1] - S.years[0] + 1 < S.meta.min_years) S.years[0] = Math.max(first, S.years[1] - S.meta.min_years + 1); renderPanel(); });
   const go = $('go'); if (go && ready) go.addEventListener('click', investigate);
@@ -545,7 +564,7 @@ function backToPick() {
 }
 
 function newCase() {
-  S.picked.clear(); S.question = S.questions[0] ? S.questions[0].id : null; S.variable = null;
+  S.picked.clear(); S.question = S.questions[0] ? S.questions[0].id : null; S.variable = null; S.userChose = false;
   if (lasso) { lasso.remove(); lasso = null; }
   backToPick();
   setMode('draw');

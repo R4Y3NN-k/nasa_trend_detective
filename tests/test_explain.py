@@ -28,10 +28,10 @@ def test_numbers_check():
     assert not ex.numbers_ok("Rising 0.3 °C per decade.", json.dumps(FACTS, ensure_ascii=False))
 
 
-def test_no_key_uses_template_and_ranks_changing_variables_first():
+def test_no_key_uses_template_and_keeps_climate_order():
     out = ex.explain(FACTS, QUESTIONS)
     assert out["source"] == "template" and "not its cause" in out["summary"]
-    assert out["next"] == ["drying", "rain"]
+    assert out["next"] == ["rain", "drying"]       # order given (climate relevance), minus the current one
 
 
 def test_gemini_text_accepted(monkeypatch):

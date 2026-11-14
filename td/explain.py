@@ -36,8 +36,9 @@ Use ONLY the facts in the JSON below. Rules:
   certainty word: tier significant = "clearly", suggestive = "possibly". Never mention a variable whose tier is none
   as changing.
 - Never claim a cause. No filler sentences. End with exactly: "This shows a change, not its cause."
-- Then pick 1 to 3 follow-up questions from "available_questions" (by id) that would help understand this area,
-  preferring variables whose quick_scan shows a change. Do not pick the question already answered.
+- Then pick 1 to 3 follow-up questions from "available_questions" (by id). They are listed most relevant for this
+  climate first (e.g. snow and frost for a cold climate, extreme heat and drying for a desert): keep that order,
+  except you may move up one whose quick_scan shows a change. Do not pick the question already answered.
 Return JSON: {{"summary": "...", "next": ["id", ...]}}
 
 FACTS:
@@ -67,13 +68,9 @@ def claims_ok(summary: str, facts: dict) -> bool:
 
 
 def rank_next(facts: dict, questions: dict) -> list[str]:
-    """Other questions, those whose variable shows the clearest change in the quick scan first."""
-    strength = {"significant": 0, "suggestive": 1, "none": 2}
-    scan = {s["var_id"]: s for s in facts.get("quick_scan", [])}
+    """The next most relevant questions for this climate (questions arrive ranked), skipping the one just answered."""
     current, done = facts.get("question_id"), facts.get("var_id")
-    cands = [(qid, q) for qid, q in questions.items() if qid != current and q.get("primary") != done]
-    cands.sort(key=lambda item: strength.get(scan.get(item[1].get("primary"), {}).get("tier"), 3))
-    return [qid for qid, _ in cands[:3]]
+    return [qid for qid, q in questions.items() if qid != current and q.get("primary") != done][:3]
 
 
 def template(facts: dict, questions: dict) -> dict:
@@ -109,7 +106,8 @@ def explain(facts: dict, questions: dict) -> dict:
     key = _api_key()
     if not key:
         return {**fallback, "why_template": "No GEMINI_API_KEY set."}
-    facts = {**facts, "available_questions": {qid: q.get("label", qid) for qid, q in questions.items()}}
+    # A list, not a dict: sort_keys below would otherwise lose the climate ranking.
+    facts = {**facts, "available_questions": [{"id": qid, "label": q.get("label", qid)} for qid, q in questions.items()]}
     facts_text = json.dumps(facts, ensure_ascii=False, sort_keys=True)
     ck = cache.make_key("gemini-explain", os.environ.get("GEMINI_MODEL", DEFAULT_MODEL), PROMPT, facts_text)
     hit = cache.get(ck)
