@@ -11,7 +11,7 @@ import pymannkendall as mk
 import statsmodels.api as sm
 from scipy import stats
 
-MIN_MONTHS = 24
+MIN_MONTHS = 60  # each calendar-month mean needs several years for the anomalies to mean anything
 SHORT_RECORD_YEARS = 30
 
 # Used only until td/config.py (owner D) defines VARIABLES.
@@ -67,7 +67,14 @@ def analyze(series, var_id) -> dict:
     p_ttest = float(fit.pvalues[1])
     t_stat = float(fit.tvalues[1])
 
-    p_mk = float(mk.hamed_rao_modification_test(y).p)
+    with np.errstate(invalid="ignore"):
+        p_mk = float(mk.hamed_rao_modification_test(y).p)
+    # Hamed-Rao's variance correction can turn negative (NaN p), typically on strongly autocorrelated series.
+    # Fallback: pre-whitening. Checked on flat AR(1) phi=0.8 series where Hamed-Rao fails: the original,
+    # Yue-Wang and trend-free pre-whitening tests all gave p = 0.0000 (false alarms); pre-whitening did not.
+    mk_fallback = not np.isfinite(p_mk)
+    if mk_fallback:
+        p_mk = float(mk.pre_whitening_modification_test(y).p)
     sen_decade = float(stats.theilslopes(y, x)[0]) * 10
 
     tests_agree = bool(np.sign(slope_decade) == np.sign(sen_decade) and slope_decade != 0)
@@ -106,6 +113,7 @@ def analyze(series, var_id) -> dict:
         "ci_decade": (ci_lo, ci_hi),
         "p_ttest": p_ttest,
         "p_mk": p_mk,
+        "mk_fallback": mk_fallback,
         "sen_decade": sen_decade,
         "tier": tier,
         "tests_agree": tests_agree,
@@ -151,6 +159,9 @@ def verdict(res) -> dict:
         detail += f" If the current rate continued, it would take about {yts:.0f} more years of data to be sure."
     if res["short_record"]:
         detail += " The record is shorter than 30 years, so treat this with extra caution."
+    if res.get("mk_fallback"):
+        detail += (" Note: the usual autocorrelation correction of the Mann-Kendall test could not be computed for"
+                   " this series, so its pre-whitened version was used instead.")
     return {"headline": headline, "detail": detail}
 
 

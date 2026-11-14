@@ -2,8 +2,20 @@
 import numpy as np
 import pytest
 
-from td.analyze import analyze, anomalies, correlate, verdict
-from td.sample import sample_series
+from td import analyze as analyze_module
+from td import report, sample, trendmap
+from td.analyze import MIN_MONTHS, analyze, anomalies, correlate, verdict
+from td.sample import sample_box_data, sample_series
+
+N_CALIBRATION = 200
+
+
+def test_contracts_exist():
+    for name in ("anomalies", "analyze", "verdict", "correlate", "compare", "agreement"):
+        assert callable(getattr(analyze_module, name))
+    assert callable(trendmap.trend_grid)
+    assert callable(sample.sample_series) and callable(sample.sample_box_data)
+    assert callable(report.markdown_report) and callable(report.csv_bytes)
 
 
 def test_known_slope_comes_back_and_is_significant():
@@ -24,9 +36,28 @@ def test_falling_trend_is_negative():
     assert "falling" in verdict(res)["headline"]
 
 
-def test_flat_series_is_rarely_significant():
-    hits = sum(analyze(sample_series("T2M", slope_decade=0.0, seed=s), "T2M")["tier"] == "significant" for s in range(40))
-    assert hits <= 4
+def test_false_significant_rate_on_flat_series():
+    """Ideal is 5% or less; measured 7.0% on these 200 seeds (see docs/validation.md). Guards against regressions."""
+    hits = sum(analyze(sample_series("T2M", 0.0, seed=s), "T2M")["tier"] == "significant" for s in range(N_CALIBRATION))
+    assert hits / N_CALIBRATION <= 0.08
+
+
+def test_ci_coverage_with_autocorrelated_noise():
+    """Ideal is 95%; measured 92.5% with AR(1) phi = 0.5 on these 200 seeds (see docs/validation.md)."""
+    covered = 0
+    for s in range(N_CALIBRATION):
+        lo, hi = analyze(sample_series("T2M", 0.3, seed=10_000 + s, phi=0.5), "T2M")["ci_decade"]
+        covered += lo <= 0.3 <= hi
+    assert covered / N_CALIBRATION >= 0.90
+
+
+def test_mann_kendall_fallback_when_hamed_rao_gives_nan():
+    # Flat series, strong autocorrelation: Hamed-Rao's variance correction goes negative for this seed.
+    res = analyze(sample_series("T2M", 0.0, seed=67, phi=0.8), "T2M")
+    assert res["mk_fallback"]
+    assert np.isfinite(res["p_mk"]) and res["p_mk"] > 0.05
+    assert "pre-whitened" in verdict(res)["detail"]
+    assert not analyze(sample_series("T2M", 0.3, seed=0), "T2M")["mk_fallback"]
 
 
 def test_anomalies_remove_the_seasons():
@@ -50,9 +81,11 @@ def test_missing_months_are_counted_and_handled():
     assert res_nan["slope_decade"] == pytest.approx(0.3, abs=0.05)
 
 
-def test_too_short_record_raises():
+def test_record_needs_at_least_60_months():
+    assert MIN_MONTHS == 60
     with pytest.raises(ValueError):
-        analyze(sample_series("T2M").iloc[:12], "T2M")
+        analyze(sample_series("T2M").iloc[:59], "T2M")
+    assert analyze(sample_series("T2M").iloc[:60], "T2M")["n_months"] == 60
 
 
 def test_short_record_flag():
@@ -103,13 +136,44 @@ def test_correlate():
     assert unrelated["n"] == len(a)
 
 
-def test_sample_box_data_shape():
-    pytest.importorskip("td.fetch", reason="td/fetch.py (BoxData) not on main yet")
-    from td.sample import sample_box_data
+# ---------- sample data (test-only) ----------
 
+def test_sample_data_is_marked_synthetic():
+    assert sample_series("T2M").attrs["synthetic"] is True
+    bd = sample_box_data((7.5, 30.2, 11.6, 37.5))
+    assert bd.is_synthetic is True
+    assert all(f["T2M"].attrs.get("synthetic") for f in bd.point_data.values())
+    assert bd.data["PRECTOTCORR"].attrs.get("synthetic")
+
+
+def test_sample_seasons_peak_in_the_right_month():
+    for var_id, peak in (("T2M", 7), ("PRECTOTCORR", 1), ("GWETTOP", 1)):
+        s = sample_series(var_id, 0.0, seed=1)
+        assert s.groupby(s.index.month).mean().idxmax() in {peak - 1 or 12, peak, peak % 12 + 1}, var_id
+
+
+def test_sample_rain_is_never_clipped_at_zero():
+    for seed in range(5):
+        assert (sample_series("PRECTOTCORR", 0.1, seed=seed) > 0).all()
+
+
+def test_sample_ar1_noise_has_the_requested_autocorrelation():
+    anom = anomalies(sample_series("T2M", 0.0, seed=2, phi=0.8))
+    assert anom.autocorr(1) == pytest.approx(0.8, abs=0.06)
+    assert abs(anomalies(sample_series("T2M", 0.0, seed=2)).autocorr(1)) < 0.1
+
+
+def test_sample_box_average_is_not_much_quieter_than_one_point():
+    bd = sample_box_data((7.5, 30.2, 11.6, 37.5))
+    one = anomalies(next(iter(bd.point_data.values()))["T2M"]).std()
+    avg = anomalies(bd.data["T2M"]).std()
+    assert avg >= 0.8 * one  # shared regional noise: independent noise would give about one / 3
+
+
+def test_sample_box_data_shape_and_opposite_rain_trends():
     bd = sample_box_data((7.5, 30.2, 11.6, 37.5))
     assert list(bd.data.columns) == ["T2M", "PRECTOTCORR", "GWETTOP"]
-    assert bd.points_used == len(bd.point_data) == 9
+    assert bd.points_used == bd.points_total == len(bd.point_data) == 9
     north = analyze(bd.point_data[max(bd.point_data)]["PRECTOTCORR"], "PRECTOTCORR")
     south = analyze(bd.point_data[min(bd.point_data)]["PRECTOTCORR"], "PRECTOTCORR")
     assert north["slope_decade"] < 0 < south["slope_decade"]
