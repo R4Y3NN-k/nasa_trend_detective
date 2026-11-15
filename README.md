@@ -13,6 +13,11 @@
 </p>
 
 <p align="center">
+  <a href="https://trend-detective-csgfbqeyagfmd2dx.italynorth-01.azurewebsites.net/"><img src="https://img.shields.io/badge/%E2%96%B6%20Open%20the%20live%20app-0B6B3A?style=for-the-badge" alt="Open the live app"></a>
+</p>
+
+<p align="center">
+  <a href="https://trend-detective-csgfbqeyagfmd2dx.italynorth-01.azurewebsites.net/"><b>Live app</b></a> &nbsp;·&nbsp;
   <a href="#run-it">Run it</a> &nbsp;·&nbsp;
   <a href="#a-case-step-by-step">Screenshots</a> &nbsp;·&nbsp;
   <a href="#how-a-verdict-is-decided">How a verdict is decided</a> &nbsp;·&nbsp;
@@ -225,6 +230,14 @@ Live numbers, November 2026. Each case is encoded in the page address, so a link
 | **Plain words** | Google Gemini, behind a number-and-claim validator | Readable summaries for non-experts, without letting the model invent figures |
 | **Tests** | pytest (100 offline tests, NASA and Gemini mocked), one Node check for the grid maths | The whole suite runs in about 30 seconds with no network |
 
+## Try it online
+
+The app is deployed on **Microsoft Azure App Service** and needs no installation:
+
+**→ [trend-detective-csgfbqeyagfmd2dx.italynorth-01.azurewebsites.net](https://trend-detective-csgfbqeyagfmd2dx.italynorth-01.azurewebsites.net/)**
+
+Open it, press **Watch an example** to see a full case play by itself, or **Use my location** to start from where you are. The first look at a new area takes a few seconds while NASA's data is fetched; after that it is cached.
+
 ## Run it
 
 Requires Python 3.12 or newer. No build step, no npm, no Docker.
@@ -240,6 +253,18 @@ python -m web.server               # open http://localhost:8600
 ```
 
 The first Streamlit prototype is still runnable with `streamlit run app.py`; the map-first application (the one in the screenshots above) is `web.server`.
+
+### Deploying
+
+The server reads its address from the environment, so the same command runs locally and in the cloud:
+
+| Variable | Default | Used for |
+|---|---|---|
+| `PORT` | — | Set by Azure App Service (and most hosts); takes priority |
+| `TD_PORT` | `8600` | Local port when `PORT` is not set |
+| `TD_HOST` | `127.0.0.1` | Set to `0.0.0.0` on a server so it accepts outside connections |
+
+Our live instance runs on Azure App Service (Python, Linux) with `python -m web.server` as the start command.
 
 ### Optional credentials
 
@@ -296,7 +321,13 @@ This is hackathon software. It has not been peer-reviewed, and nothing in it is 
 
 ## Team
 
-R4Y3NN-k (data) · yahya0X (dashboard) · stats · content.
+| Member | Role |
+|---|---|
+| **Mohamed Rayen Trabelsi** ([R4Y3NN-k](https://github.com/R4Y3NN-k)) | Data: NASA POWER, Giovanni, land mask |
+| **Mohamed Yahya Dahouathi** ([yahya0X](https://github.com/yahya0X)) | Dashboard and deployment |
+| **Mohamed Aziz Abbes** | Statistics: trend tests, verdicts, cross-check |
+| **Emna Chermiti** | Content |
+
 Module ownership is in [`PLAN.md`](PLAN.md).
 
 ---
