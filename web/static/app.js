@@ -82,6 +82,8 @@ const ICONS = {
   layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>', hill: '<path d="M3 19l6-10 4 6 2-3 6 7z"/>',
   pin: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  book: '<path d="M12 6.5C10.2 4.9 7.3 4.6 4.5 5v13.5c2.8-.4 5.7-.1 7.5 1.5 1.8-1.6 4.7-1.9 7.5-1.5V5c-2.8-.4-5.7-.1-7.5 1.5z"/><path d="M12 6.5V20"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   spin: '<path d="M21 12a9 9 0 1 1-9-9"/>',
   compare: '<path d="M7 4v16M17 4v16"/><path d="M3 8h8M13 16h8"/>', swap: '<path d="M7 7h13l-4-4M17 17H4l4 4"/>',
 };
@@ -525,7 +527,11 @@ function headHtml() {
   const tips = { simple: 'Simple: the answer in plain words and the key charts', expert: 'Expert: every test, number, map and method' };
   const seg = ['simple', 'expert'].map((m) => `<button type="button" data-act="ui" data-ui="${m}" aria-pressed="${S.ui === m}" title="${tips[m]}">${m === 'simple' ? 'Simple' : 'Expert'}</button>`).join('');
   const mark = '<svg class="mark" role="img" aria-label="Trend Detective"><use href="#logo"/></svg>';
-  return `<div class="row" style="gap:10px;align-items:center;min-width:0">${mark}${left}</div><div class="seg" role="group" aria-label="Level of detail">${seg}</div>`;
+  return `<div class="row" style="gap:10px;align-items:center;min-width:0">${mark}${left}</div>
+    <div class="row" style="gap:7px;align-items:center;flex:none">
+      <div class="seg" role="group" aria-label="Level of detail">${seg}</div>
+      <button type="button" class="ab-open" data-act="about" title="The data &amp; the math behind every verdict" aria-label="The data and the math">${ic('book', 's')}</button>
+    </div>`;
 }
 
 function renderPanel() {
@@ -954,6 +960,7 @@ function tabHtml() {
       <li>Per-cell maps correct for testing many cells at once (Benjamini-Hochberg, 10%).</li>
     </ol>
     <p class="t-cap">Climate is usually judged over 30 years or more (World Meteorological Organization); ${r.start.slice(0, 4)} to ${r.end.slice(0, 4)} gives ${Math.round(r.span_years)}. A trend in one variable shows a change here; it does not by itself prove climate change or name a cause.</p>
+    <button type="button" class="link" data-act="about">The data &amp; the math: every step with its formula${ic('next', 's')}</button>
     <a class="link" href="/docs/validation.md" target="_blank" rel="noopener">How we checked the method (validation notes)${ic('next', 's')}</a></div>`;
   }
   return `<div id="sec-tab" data-tabpanel role="tabpanel">${body}</div>`;
@@ -1382,6 +1389,149 @@ $('coach').addEventListener('click', (e) => {
   else if (b.dataset.welcome === 'location') runDemo();
 });
 
+// ---------------------------------------------------------------- Data & math window
+// One self-contained reference: where every number comes from (top) and the formula behind each step
+// (beneath it). Ordered like the app's own pipeline, so nothing needs saying twice.
+const fx = (formula, caption) => `<div class="fx"><div class="fx-f" aria-label="Formula">${formula}</div><p class="fx-c">${caption}</p></div>`;
+
+function aboutHtml() {
+  const meta = S.meta || { years: [1981, 2025], max_points: 30, min_years: 10, variables: {} };
+  const [y0, y1] = meta.years;
+  const secs = [['ab-1', 'The data'], ['ab-2', 'One series'], ['ab-3', 'The trend'], ['ab-4', 'Chance?'], ['ab-5', 'The verdict'], ['ab-6', 'Maps & more']];
+  const chips = secs.map(([id, label]) => `<button type="button" data-goto="${id}">${label}</button>`).join('');
+  const varRows = Object.values(meta.variables).map((v) =>
+    `<tr><td>${esc(v.name)}</td><td>${esc(v.definition || '')}</td><td>${esc(v.units || '')}</td></tr>`).join('');
+
+  return `<div class="about-card" role="document">
+  <header class="ab-head">
+    <div class="row">
+      <div class="stack tight" style="gap:3px">
+        <h2 class="ab-title">The data &amp; the math</h2>
+        <p class="t-cap">Every verdict is built in six steps. Here is each one, with its formula beneath it.</p>
+      </div>
+      <button type="button" class="ab-close" data-ab="close" aria-label="Close">${ic('close', 's')}</button>
+    </div>
+    <nav class="ab-chips" aria-label="Sections">${chips}</nav>
+  </header>
+  <div class="ab-body">
+
+    <section class="ab-sec" id="ab-1">
+      <h3><span class="no">1</span>Where the numbers come from</h3>
+      <p class="t-body">Every series starts at <strong>NASA POWER</strong>, NASA's open data service for the
+        <strong>MERRA-2 reanalysis</strong>: a physics model of the whole atmosphere, re-run over the past while being
+        continually corrected with millions of real observations from satellites, weather stations and balloons.
+        That gives a complete value for every month from <strong>${y0} to ${y1}</strong>, anywhere on Earth —
+        no gaps, but model output, not a single thermometer.</p>
+      <p class="t-body">The data comes on a grid of cells <strong>0.5° of latitude × 0.625° of longitude</strong>
+        (roughly 55 km tall). The app snaps your selection to these cells — up to ${meta.max_points || 30} of them —
+        and drops the ones that are sea: NASA POWER reports permanently saturated topsoil (wetness 1.0, or none at all)
+        over open water, which is how the app tells water from land. Missing months stay missing; nothing is filled in.</p>
+      <table class="ab-table"><tbody>${varRows}</tbody></table>
+      <p class="t-cap">For the headline variables the app also fetches a <strong>second NASA record</strong> through NASA Giovanni
+        and runs the same tests on it: AIRS (an infrared sounder on the Aqua satellite, from 2002) for temperature, and
+        GPM IMERG (many satellites combined with rain gauges) for rain. Neither is fully independent of MERRA-2 — the model
+        ingests AIRS readings too, and its rain is gauge-corrected — but they are built by different teams with different methods.</p>
+    </section>
+
+    <section class="ab-sec" id="ab-2">
+      <h3><span class="no">2</span>From many cells to one series</h3>
+      ${fx(`<span class="ol"><i>x</i></span><sub>t</sub> = Σ<sub>i</sub> <i>w</i><sub>i</sub> <i>x</i><sub>i,t</sub> ⁄ Σ<sub>i</sub> <i>w</i><sub>i</sub>&nbsp;,&emsp;<i>w</i><sub>i</sub> = cos <i>φ</i><sub>i</sub>`,
+    `Month by month, the land cells are averaged with weight w = cos(latitude φ), because cells cover less ground towards
+     the poles. A cell with a missing month simply drops out of that month.`)}
+      ${fx(`<i>a</i><sub>t</sub> = <i>x</i><sub>t</sub> − <i>m</i><sub>month(t)</sub>`,
+    `The anomaly: each month minus the average of its calendar month (m) over the whole record. This removes the seasons,
+     so the summer–winter swing cannot pose as a trend. Everything below works on these anomalies a.`)}
+    </section>
+
+    <section class="ab-sec" id="ab-3">
+      <h3><span class="no">3</span>Measuring the trend — twice</h3>
+      <p class="t-body">Two rates are computed by different logics; a trend is only called clear when they agree in direction.
+        (Below 60 months of data the app refuses to compute either.)</p>
+      ${fx(`<i>a</i><sub>t</sub> = <i>α</i> + <i>β</i>·<i>t</i> + <i>ε</i><sub>t</sub>&emsp;→&emsp;rate per decade = 10 <i>β</i>`,
+    `A straight line through the anomalies against time t in years, placed where the squared errors are smallest
+     (ordinary least squares). Its slope β is per year; ×10 gives the per-decade rate on the dashboard.`)}
+      ${fx(`Sen's slope = median<sub>i&lt;j</sub> ( <i>a</i><sub>j</sub> − <i>a</i><sub>i</sub> ) ⁄ ( <i>t</i><sub>j</sub> − <i>t</i><sub>i</sub> )`,
+    `The second rate: the middle value of the slope between every pair of months. A few freak months barely move a median,
+     so this one is hard to fool.`)}
+      ${fx(`total change = rate per decade × years ⁄ 10&emsp;·&emsp;share of average = rate ⁄ <span class="ol"><i>x</i></span> × 100`,
+    `The "about X ${esc('°C')} over N years" line is the change along the trend line, not last year minus first year. The share
+     of the long-term average is shown only for quantities with a true zero (rain, snow, soil wetness), so wet and dry places compare fairly.`)}
+    </section>
+
+    <section class="ab-sec" id="ab-4">
+      <h3><span class="no">4</span>Could it be chance?</h3>
+      <p class="t-body">Climate months remember each other — a warm month tends to follow a warm month — which makes naive
+        tests overconfident. Both tests below are corrected for that memory.</p>
+      ${fx(`<i>t</i> = <i>β</i> ⁄ se<sub>NW</sub>(<i>β</i>)&emsp;·&emsp;95% range = ( <i>β</i> ± 1.96 se ) × 10`,
+    `The fit test. The standard error comes from Newey–West, which counts how much each month overlaps its neighbours up to
+     12 months back. Its p-value is the chance of a slope this steep appearing with no real trend; if the 95% range includes
+     zero, there may be no trend at all.`)}
+      ${fx(`<i>S</i> = Σ<sub>i&lt;j</sub> sgn( <i>a</i><sub>j</sub> − <i>a</i><sub>i</sub> )&emsp;·&emsp;Var*(<i>S</i>) = Var(<i>S</i>) · <i>n</i> ⁄ <i>n</i>*`,
+    `The rank test (Mann–Kendall): across every pair of months, count whether the later one is higher. No straight line and
+     no bell curve are assumed. The Hamed–Rao factor n/n* shrinks the evidence to the number of effectively independent
+     months; on the rare series where that correction fails, the app says so and uses the pre-whitened test
+     (each month's echo of the previous one is removed first).`)}
+    </section>
+
+    <section class="ab-sec" id="ab-5">
+      <h3><span class="no">5</span>The verdict rule</h3>
+      <div class="ab-rule">
+        <span><strong>Clearly changing</strong> — both tests give p &lt; 0.05 <em>and</em> the two rates agree in direction.</span>
+        <span><strong>Possibly changing</strong> — either test gives p &lt; 0.10.</span>
+        <span><strong>No clear change</strong> — anything less.</span>
+      </div>
+      <p class="t-body">Two tests built on different principles must both be fooled before the app cries trend — that is the
+        point of running them side by side.</p>
+      ${fx(`months needed ≈ <i>n</i> · ( 1.96 ⁄ |<i>t</i>| )<sup>2/3</sup>`,
+    `Behind "about X more years of data": if the trend and the noise stay as they are, the t statistic grows like n<sup>3/2</sup>,
+     so solving for t = 1.96 says how long the record must get before the 5% test would pass.`)}
+      <p class="t-body">One honesty check runs on every verdict: the same analysis is repeated on the record up to the end of
+        the last full decade. If the whole record shows a trend but that shorter part does not, the dashboard says most of the
+        change came recently — instead of selling it as a steady rate.</p>
+    </section>
+
+    <section class="ab-sec" id="ab-6">
+      <h3><span class="no">6</span>Maps, groups and comparisons</h3>
+      <p class="t-body"><strong>Zone map.</strong> Testing many cells multiplies false alarms: at 5%, about one flat cell in
+        twenty would "pass" by luck. So each cell's <em>larger</em> p-value (of its two tests) goes into the
+        Benjamini–Hochberg step:</p>
+      ${fx(`keep cells with <i>p</i><sub>(k)</sub> ≤ ( <i>k</i> ⁄ <i>m</i> ) · 0.10`,
+    `p-values sorted smallest first, m = number of cells. Reported as q-values; a dot on the map means q < 0.10 and that
+     cell's own two rates agree in direction. This keeps expected false flags under 10% of all flagged cells.`)}
+      <p class="t-body"><strong>Groups.</strong> Each cell gets a trend fingerprint — its per-decade rates on three variables,
+        each scaled to unit spread — and similar fingerprints are joined step by step (Ward linkage). Descriptive only:
+        a shared colour means "these cells change alike"; significance stays with each cell in the zone map.</p>
+      <p class="t-body"><strong>Second dataset.</strong> The records <em>agree</em> when both lean the same way (at least
+        suggestive); <em>disagree</em> when they lean opposite ways and at least one is significant; anything weaker and the
+        app claims one source only.</p>
+      <p class="t-body"><strong>Two places.</strong> Each place is tested on its own record, and one is called faster only
+        when the two 95% ranges do not overlap — any smaller gap could be chance. The "moves together" r between two
+        variables is the plain correlation of their monthly anomalies over shared months: consistent with a connection,
+        never proof of cause.</p>
+      <p class="t-cap">Method after Acker et al. (2009); Mann–Kendall correction from Hamed &amp; Rao (1998); grid FDR from
+        Wilks (2016). Climate is normally judged over 30 years or more (WMO). Every formula above is exactly what the code
+        computes — the app never shows a number it did not calculate.
+        <a class="link" href="/docs/validation.md" target="_blank" rel="noopener">Validation notes</a></p>
+    </section>
+
+  </div></div>`;
+}
+
+function openAbout() {
+  const el = $('about');
+  el.innerHTML = aboutHtml();
+  el.hidden = false;
+  el.querySelector('.ab-close').focus();
+}
+
+function closeAbout() { $('about').hidden = true; }
+
+$('about').addEventListener('click', (e) => {
+  if (e.target === $('about') || e.target.closest('[data-ab="close"]')) return closeAbout();
+  const chip = e.target.closest('[data-goto]');
+  if (chip) { const sec = $(chip.dataset.goto); if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+});
+
 // ---------------------------------------------------------------- events (one delegated listener per kind)
 const ACTIONS = {
   ui: (b) => { S.ui = b.dataset.ui; pref.set('ui', S.ui); renderPanel(); updateHash(); if (S.screen === 'verdict') updateHint(); },
@@ -1399,6 +1549,7 @@ const ACTIONS = {
   csv: () => downloadSeries(), cells: () => downloadCells(), json: () => downloadCase(),
   print: () => window.print(),
   share: () => share(),
+  about: () => openAbout(),
 };
 $('panel').addEventListener('click', (e) => {
   if (e.target.closest('.info')) return;
@@ -1438,6 +1589,7 @@ map.on('moveend', () => { if (S.mode === 'points') renderPoints(); });
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); }
+  if (e.key === 'Escape' && !$('about').hidden) { closeAbout(); return; }
   if (e.key === 'Escape' && S.mode === 'draw') { window.cancelLasso(); setMode('pan'); }
 });
 
