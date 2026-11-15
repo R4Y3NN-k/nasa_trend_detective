@@ -354,7 +354,7 @@ def cross_check(body) -> dict:
     how = {"significant": "a clear", "suggestive": "a possible", "none": "no clear"}
     look = state
     if state == "agree":
-        headline = "Two NASA datasets agree"
+        headline = "Two NASA datasets agree on the direction"
         detail = (f"Both show {name} {word(res_a['slope_decade'])} over {span}: "
                   f"{rate(res_a['slope_decade'])} per decade (MERRA-2) and {rate(res_b['slope_decade'])} per decade "
                   f"({short}). {rate_note(res_a, res_b)}")
@@ -466,6 +466,7 @@ def explain_case(body) -> dict:
             "variable": info["name"], "headline": verdict(res)["headline"], "tier": res["tier"],
             "rate_per_decade": _rate(res["slope_decade"], info),
             "total_change": _rate(res["total_change"], info), "years": f"{y0}–{y1}",
+            "recent": (recent_change(data[var_id], var_id, res, y0, y1) or {}).get("text", ""),
         },
         "quick_scan": scan_data(data, y0, y1, {q["primary"] for q in ranked["questions"]}),
     }
@@ -645,6 +646,26 @@ def elevation_split(land: dict, months, var_id: str) -> dict | None:
 
 # ------------------------------------------------------------------ decades and seasons (UI pass)
 
+def recent_change(series: pd.Series, var_id: str, res: dict, y0: int, y1: int) -> dict | None:
+    """Is the trend mostly recent? Same tests on the record up to the last full decade (e.g. 1981–2019).
+
+    A steady per-decade rate can hide a record that stays flat and then jumps (Tunis temperature: flat
+    1981–2019, then the hot 2020s). When the whole record shows a trend but the part before the current
+    decade shows none, say so. Needs at least 20 years before the cut-off; otherwise returns None.
+    """
+    cut = y1 - (y1 % 10) - 1                       # last year of the last complete decade
+    if res.get("tier") == "none" or cut - y0 + 1 < 20 or cut >= y1:
+        return None
+    try:
+        early = analyze(series.loc[:str(cut)], var_id)
+    except ValueError:
+        return None
+    if early["tier"] != "none":
+        return None
+    return {"until": cut, "early_slope_decade": num(early["slope_decade"]),
+            "text": f"Most of this change came recently: from {y0} to {cut} alone there is no clear trend."}
+
+
 def decade_means(anom: pd.Series) -> list[dict]:
     """Mean monthly anomaly per calendar decade (1980s, 1990s, ...): the bars of the simple chart.
 
@@ -745,6 +766,7 @@ def run_analysis(body) -> dict:
         "elevation": elevation_split(land, months, var_id),
         "has_second_source": bool(second_source_for(var_id)),
         "decades": decade_means(res["_anomalies"]),
+        "recent": recent_change(series, var_id, res, y0, y1),
         "annual": (lambda a: {"year": [int(y) for y in a.index], "value": [num(v) for v in a]})(annual_anomalies(series)),
         "figures": {"anomaly": figure_json(trend_figure(series, res, view="anomaly")),
                     "raw": figure_json(trend_figure(series, res, view="raw"))},

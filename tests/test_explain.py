@@ -94,3 +94,14 @@ def test_supported_agreement_and_closing_line_accepted(monkeypatch):
         {"summary": "Clearly warmer, about 0.20 °C per decade; a second NASA dataset agrees. "
                     "This shows a change, not its cause.", "next": []}))
     assert ex.explain(facts, QUESTIONS)["source"] == "gemini"
+
+
+def test_template_says_it_plainly_without_copying_the_headline():
+    facts = {"var_id": "T2M", "verdict": {"variable": "Air temperature", "headline": "Air temperature rising about 0.19 °C per decade",
+                                          "tier": "significant", "total_change": "+0.88 °C", "years": "1981–2025",
+                                          "recent": "Most of this change came recently: from 1981 to 2019 alone there is no clear trend."},
+             "cross_check": {"state": "agree", "headline": "Two NASA datasets agree on the direction", "detail": ""}}
+    s = ex.template(facts, {})["summary"]
+    assert s.startswith("Here, air temperature went up by about 0.88 °C between 1981 and 2025.")
+    assert "came recently" in s and "same direction" in s and s.endswith("This shows a change, not its cause.")
+    assert "per decade" not in s                        # not a copy of the headline

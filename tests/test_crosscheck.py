@@ -33,7 +33,7 @@ def test_crosscheck_agree(monkeypatch, one_land_point):
     out = server.cross_check(BODY)
     assert out["state"] == "agree"
     assert out["years"][0] == 2002 and out["sources"][1]["label"].startswith("AIRS")
-    assert out["figure"]["data"] and "Two NASA datasets agree" == out["headline"]
+    assert out["figure"]["data"] and "Two NASA datasets agree on the direction" == out["headline"]
 
 
 def test_crosscheck_disagree(monkeypatch, one_land_point):
@@ -110,3 +110,19 @@ def test_groups_need_four_land_points(monkeypatch):
     monkeypatch.setattr(server, "fetch_points", lambda pts, y0, y1: {pt: _land(100.0, 0.3, 1) for pt in pts})
     out = server.cluster_view({"points": [[36.0, 10.0], [36.5, 10.0]], "years": [1981, 2025]})
     assert not out["ok"] and "at least 4" in out["reason"]
+
+
+def test_recent_change_flags_a_late_jump_only():
+    """Flat 1981-2019 then +1.2 in 2020-2025 (like Tunis): the whole record trends, the early part does not."""
+    from td.analyze import analyze
+
+    flat = sample_series("T2M", slope_decade=0.0, seed=11)
+    jump = flat.copy()
+    jump.loc["2020":] += 1.2
+    res = analyze(jump, "T2M")
+    assert res["tier"] != "none"
+    note = server.recent_change(jump, "T2M", res, 1981, 2025)
+    assert note and note["until"] == 2019 and "from 1981 to 2019 alone there is no clear trend" in note["text"]
+
+    steady = sample_series("T2M", slope_decade=0.4, seed=12)
+    assert server.recent_change(steady, "T2M", analyze(steady, "T2M"), 1981, 2025) is None

@@ -482,10 +482,12 @@ function patch(id, html) {            // replace one section without redrawing t
 }
 
 function headHtml() {
+  const [first, last] = S.meta ? S.meta.years : [1981, 2025];
   const left = S.screen === 'verdict'
     ? `<button type="button" class="link" data-act="back">${ic('back', 's')}Change area or question</button>`
-    : '<span class="where">NASA data, 1981 to 2025</span>';
-  const seg = ['simple', 'expert'].map((m) => `<button type="button" data-act="ui" data-ui="${m}" aria-pressed="${S.ui === m}">${m === 'simple' ? 'Simple' : 'Expert'}</button>`).join('');
+    : `<span class="head-name"><strong>Trend Detective</strong><span class="where" title="${last - first + 1} years of monthly NASA data">NASA data · ${first}–${last}</span></span>`;
+  const tips = { simple: 'Simple: the answer in plain words and the key charts', expert: 'Expert: every test, number, map and method' };
+  const seg = ['simple', 'expert'].map((m) => `<button type="button" data-act="ui" data-ui="${m}" aria-pressed="${S.ui === m}" title="${tips[m]}">${m === 'simple' ? 'Simple' : 'Expert'}</button>`).join('');
   const mark = '<svg class="mark" role="img" aria-label="Trend Detective"><use href="#logo"/></svg>';
   return `<div class="row" style="gap:10px;align-items:center;min-width:0">${mark}${left}</div><div class="seg" role="group" aria-label="Level of detail">${seg}</div>`;
 }
@@ -697,6 +699,12 @@ function explainHtml() {
   </section>`;
 }
 
+// A decade the record only partly covers (e.g. 2020 to 2025) is labelled with its years, not "2020s".
+function decadeLabel(x) {
+  const n = x.last_year - x.first_year + 1;
+  return n < 10 ? `${x.first_year}–${String(x.last_year).slice(2)}` : x.decade;
+}
+
 function decadesHtml() {
   const R = S.result, D = R.decades || [], v = R.variable, d = v.decimals ?? 2;
   if (D.length < 2) return '';
@@ -713,11 +721,14 @@ function decadesHtml() {
         <span class="fill" style="top:${y}%;height:${Math.max(h, 0.8)}%"></span>
         <span class="val" style="${up ? `bottom:calc(${100 - y}% + 3px)` : `top:calc(${y + h}% + 3px)`}">${fmt(x.mean, d)}</span>
       </span></span>
-      <span class="lab">${esc(x.decade)}</span></button>`;
+      <span class="lab">${esc(decadeLabel(x))}</span></button>`;
   }).join('');
+  const last = D[D.length - 1];
+  const partial = last.last_year - last.first_year + 1 < 10
+    ? ` The last bar covers only ${last.last_year - last.first_year + 1} years (${last.first_year} to ${last.last_year}).` : '';
   return `<section class="stack">
     <div class="stack tight"><h2 class="t-title">Decade by decade</h2>
-      <p class="t-cap">Average ${term('anomaly', 'difference from usual')} in each decade, in ${esc(v.units || 'units')}. Zero is the ${R.years[0]} to ${R.years[1]} average.</p></div>
+      <p class="t-cap">Average ${term('anomaly', 'difference from usual')} in each decade, in ${esc(v.units || 'units')}. Zero is the ${R.years[0]} to ${R.years[1]} average.${partial}</p></div>
     <div class="bars" role="group" aria-label="Average anomaly per decade">${bars}</div>
   </section>`;
 }
@@ -750,7 +761,7 @@ function crossHtml() {
   if (D.state === 'none') return quiet(`No independent NASA dataset for ${R.variable.name.toLowerCase()} yet.`);
   if (!D.sources || !D.sources.length) return quiet(`Second dataset not checked: ${accessReason(D.detail)}.`);
   const look = D.look || D.state, v = R.variable, d = v.decimals ?? 2, u = v.units || '';
-  const head = look === 'agree' ? `<span class="status" style="color:var(--teal-d)">${ic('check')}${D.state === 'agree' ? 'A second NASA dataset agrees' : esc(D.headline)}</span>`
+  const head = look === 'agree' ? `<span class="status" style="color:var(--teal-d)">${ic('check')}${D.state === 'agree' ? 'A second NASA dataset agrees on the direction' : esc(D.headline)}</span>`
     : look === 'disagree' ? `<span class="status" style="color:var(--amber)">${ic('info')}${esc(D.headline)}</span>`
       : `<span class="status flat">${ic('layers')}${esc(D.headline)}</span>`;
   const rows = D.sources.map((s) => `<dt>${esc(s.label)}</dt><dd>${fmt(s.slope_decade, d)} ${esc(u)}<small> per decade · ${esc(statusOf(s.tier, s.slope_decade).words.toLowerCase())}${expert && s.ci_decade ? `<br>95% range ${fmt(s.ci_decade[0], d)} to ${fmt(s.ci_decade[1], d)}` : ''}</small></dd>`).join('');
@@ -908,6 +919,7 @@ function renderVerdict() {
       <h1 class="t-display">${esc(R.words.headline)}</h1>
       <span class="status big ${st.cls}">${ic(st.icon)}${st.words}</span>
       <p class="t-body">${change}</p>
+      ${R.recent ? `<p class="t-body recent">${ic('info', 's')}${esc(R.recent.text)}</p>` : ''}
       <p class="t-cap">This shows a change, not its cause. ${plural(R.points_used, 'land cell')}, ${R.years[0]} to ${R.years[1]}.</p>
     </div>
     ${decadesHtml()}

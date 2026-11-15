@@ -73,11 +73,32 @@ def rank_next(facts: dict, questions: dict) -> list[str]:
     return [qid for qid, q in questions.items() if qid != current and q.get("primary") != done][:3]
 
 
+def plain_change(v: dict) -> str:
+    """The verdict in everyday words (not a copy of the headline): how much, over which years."""
+    name = (v.get("variable") or "this variable").lower()
+    total, years, tier = v.get("total_change", ""), v.get("years", ""), v.get("tier")
+    y0, _, y1 = years.partition("–")
+    amount = total.lstrip("+-").strip()
+    up = total.startswith("+")
+    if tier == "significant" and amount:
+        return f"Here, {name} went {'up' if up else 'down'} by about {amount} between {y0} and {y1}"
+    if tier == "suggestive" and amount:
+        return (f"Here, {name} may have gone {'up' if up else 'down'} by about {amount} between {y0} and {y1}, "
+                "but the evidence is weak")
+    return (f"Here, {name} shows no clear change between {y0} and {y1}: the ups and downs from year to year "
+            "are bigger than any steady change")
+
+
 def template(facts: dict, questions: dict) -> dict:
-    """Deterministic fallback: the app's own verdict words."""
-    parts = [facts.get("verdict", {}).get("headline", "")]
+    """Deterministic fallback: the app's own results, said plainly (it does not repeat the headline)."""
+    v = facts.get("verdict", {})
+    parts = [plain_change(v) if v else ""]
+    if v.get("recent"):
+        parts.append(v["recent"])
     cc = facts.get("cross_check") or {}
-    if cc.get("headline") and cc.get("state") in ("agree", "disagree"):
+    if cc.get("state") == "agree":
+        parts.append("A second NASA dataset shows the same direction")
+    elif cc.get("state") == "disagree" and cc.get("headline"):
         parts.append(cc["headline"])
     text = ". ".join(p.rstrip(".") for p in parts if p)
     return {"summary": (text + ". " if text else "") + "This shows a change, not its cause.",
