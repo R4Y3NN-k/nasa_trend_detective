@@ -127,12 +127,12 @@ function updateHint() {
         ? '<span class="legend-sw" style="background:#C2410C"></span>rising<span class="legend-sw" style="background:#1D4ED8"></span>falling · a dot marks a clear trend at that cell'
         : 'The cells used for this verdict';
   } else if (S.screen === 'loading') text.textContent = 'Fetching NASA POWER data…';
-  else if (S.place && !S.picked.size) {
+  else if (S.place && S.placeFresh) {
     text.textContent = `${S.place.name}: draw a loop, or`;
     act.textContent = 'Investigate this area'; act.hidden = false;
   } else if (S.mode === 'draw') text.textContent = 'Draw one loop around your area · Esc to cancel';
   else if (S.mode === 'points') text.textContent = `Tap grid cells to add or remove them (up to ${S.meta ? S.meta.max_points : 30})`;
-  else text.textContent = 'Drag to move · pen tool or Shift + drag to draw a loop around an area';
+  else text.textContent = phone() ? 'Pen tool: draw a loop around an area' : 'Drag to move · pen tool or Shift + drag to draw a loop around an area';
 }
 
 let flashTimer = null;
@@ -259,9 +259,10 @@ function selectLoop(loop) {
     }
     if (!cells.length) cells = [snap(centre[0], centre[1])];
     if (S.added.size) {
-      S.note = inLoop.length <= 1
-        ? `Your loop was smaller than one NASA grid cell (about 55 km), so we added the ${plural(S.added.size, 'nearest land cell')}, shown with a dashed ring.`
-        : `Your loop held fewer than ${K_MIN} land cells, so we added the ${plural(S.added.size, 'nearest land cell')}, shown with a dashed ring.`;
+      const nearest = `the ${plural(S.added.size, 'nearest land cell')}, shown with a dashed ring`;
+      S.note = !inLoop.length && !S.isLand(centre[0], centre[1]) ? `There is no land inside your loop, so we used ${nearest}.`
+        : !inLoop.length ? `Your loop was smaller than one NASA grid cell (about 55 km), so we used ${nearest}.`
+          : `Your loop held fewer than ${K_MIN} land cells, so we added ${nearest}.`;
     }
   }
   S.picked = new Map(cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
@@ -274,7 +275,7 @@ function selectAround(place) {
   const b = [[place.lat - 1, place.lon - 1], [place.lat - 1, place.lon + 1], [place.lat + 1, place.lon + 1], [place.lat + 1, place.lon - 1]];
   setLasso(b);
   selectLoop(b);
-  map.flyToBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), duration: reduceMotion ? 0 : 0.8 });
+  if (reduceMotion || document.hidden) map.fitBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), animate: false }); else map.flyToBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), duration: 0.8 });
 }
 
 // Every picked cell turned out to be sea (NASA's own data says so): use the nearest land cells instead of an error.
@@ -309,7 +310,7 @@ function undo() {
 
 let areaTimer = null;
 function selectionChanged() {
-  S.climate = null; S.climateSig = null; S.error = null;
+  S.climate = null; S.climateSig = null; S.error = null; S.placeFresh = false;
   $('tool-undo').disabled = !S.history.length;
   queuePointData();
   renderPoints();
@@ -334,6 +335,7 @@ function adoptQuestion() {
   if (S.restoreQ && S.questions.some((q) => q.id === S.restoreQ)) { S.question = S.restoreQ; S.variable = null; S.restoreQ = null; return; }
   if (S.variable) return;
   if (!S.userChose || !S.questions.some((q) => q.id === S.question)) S.question = S.questions[0] ? S.questions[0].id : null;
+  if (S.screen === 'pick') updateHash();
 }
 
 // ---------------------------------------------------------------- real NASA POWER data per picked cell
@@ -362,7 +364,8 @@ function pumpPointData() {
   pdChanged();
 }
 
-function afterPointData() { widenIfAllSea(); maybeScan(); maybeClimate(); }
+// Runs on a timer, not an animation frame, so it also updates a tab that is in the background.
+function afterPointData() { widenIfAllSea(); renderPoints(); patch('sec-area', areaHtml()); syncGo(); maybeScan(); maybeClimate(); }
 
 function pdChanged() {
   if (pdFrame) return;
@@ -1060,8 +1063,12 @@ function updateHash() {
   if (S.picked.size && primary) { parts.push('v=' + primary); if (!S.variable && S.question) parts.push('q=' + S.question); }
   if (S.ui === 'expert') parts.push('m=expert');
   if (S.screen === 'verdict') parts.push('s=v');
-  try { history.replaceState(null, '', parts.length ? '#' + parts.join('&') : location.pathname); } catch (_) { /* sandboxed frame */ }
+  ownHash = parts.length ? '#' + parts.join('&') : '';
+  try { history.replaceState(null, '', ownHash || location.pathname); } catch (_) { /* sandboxed frame */ }
 }
+// A link pasted into a tab that already shows the app only changes the hash: reopen that case.
+let ownHash = location.hash;
+window.addEventListener('hashchange', () => { if (location.hash !== ownHash) location.reload(); });
 
 function restoreFromHash() {
   const h = new URLSearchParams(location.hash.replace(/^#/, ''));
@@ -1096,7 +1103,7 @@ function searchRender() {
   const input = $('place'), box = $('place-results');
   const q = norm(input.value.trim());
   const all = window.TD_PLACES || [];
-  const hits = q ? all.filter((p) => norm(p[0]).startsWith(q)).concat(all.filter((p) => !norm(p[0]).startsWith(q) && (norm(p[0]).includes(q) || norm(p[1]).includes(q)))) : all.slice(0, 8);
+  const hits = q ? all.filter((p) => norm(p[0]).startsWith(q)).concat(all.filter((p) => !norm(p[0]).startsWith(q) && (norm(p[0]).includes(q) || norm(p[1]).split(/[ ·]+/).some((w) => w.startsWith(q))))) : all.slice(0, 8);
   search.items = hits.slice(0, 8);
   if (search.active >= search.items.length) search.active = search.items.length - 1;
   box.innerHTML = search.items.length
@@ -1110,7 +1117,7 @@ function searchRender() {
 function searchClose() { $('place-results').hidden = true; $('place').setAttribute('aria-expanded', 'false'); search.active = -1; }
 
 function goToPlace(p, investigateNow) {
-  S.place = { name: p[0], lat: p[2], lon: p[3] };
+  S.place = { name: p[0], lat: p[2], lon: p[3] }; S.placeFresh = true;
   $('place').value = p[0];
   searchClose();
   if (S.screen !== 'pick') backToPick();
@@ -1118,7 +1125,7 @@ function goToPlace(p, investigateNow) {
   const target = L.latLng(p[2], p[3]);
   const shift = phone() ? [0, window.innerHeight * 0.2] : [220, 0];      // keep the place clear of the panel
   const centre = map.unproject(map.project(target, 7).add(shift), 7);
-  map.flyTo(centre, 7, { duration: reduceMotion ? 0 : 1.1 });
+  if (reduceMotion || document.hidden) map.setView(centre, 7, { animate: false }); else map.flyTo(centre, 7, { duration: 1.1 });
   updateHint();
 }
 
