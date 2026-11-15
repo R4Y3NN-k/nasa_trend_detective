@@ -253,30 +253,49 @@ details.menu .items button:hover { background: var(--teal-s); }
 
 /* ------------------------------------------------------------ phone: the panel becomes a bottom sheet */
 @media (max-width: 820px) {
-  :root { --panel-w: 0px !important; }   /* beats a width saved by the desktop resize handle */
-  .panel-resize { display: none; }
-  .panel { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 54vh; }
+  :root { --panel-w: 0px !important; --sheet-h: 54vh; --sheet-bottom: max(8px, env(safe-area-inset-bottom)); }   /* --panel-w beats a width saved by the desktop handle; --sheet-h is set by the drag handle */
+  /* the handle becomes a grab bar on the sheet's top edge: drag it, or tap it to open the sheet wider or back */
+  .panel-resize { top: 0; bottom: auto; left: 0; right: 0; width: auto; height: 26px; cursor: ns-resize; }
+  .panel-resize::after { left: 50%; top: 8px; width: 40px; height: 4px; margin: 0 0 0 -20px; background: var(--line-strong); }
+  body.resizing, body.resizing * { cursor: ns-resize !important; }
+  .panel { top: auto; left: 8px; right: 8px; bottom: var(--sheet-bottom); width: auto; height: var(--sheet-h); max-height: calc(100dvh - 112px); transition: height .22s var(--ease), transform .25s var(--ease); }
+  body.resizing .panel { transition: none; }
+  /* while a loop is being drawn the sheet slides down to its header, so nearly the whole map is canvas */
+  body[data-mode="draw"] .panel { transform: translateY(calc(100% - 74px)); }
   .panel-body { padding: 16px 16px 20px; }
-  .panel-head { padding: 8px 10px 8px 16px; }
+  .panel-head { padding: 18px 10px 8px 16px; }
+  .panel-head .where { display: none; }
+  .panel-head .head-name strong { white-space: nowrap; }
+  .seg button { padding: 0 10px; min-height: 36px; }
   .panel-foot { padding: 10px 16px 12px; }
+  .panel-foot .t-cap { font-size: 10.5px !important; line-height: 1.3; margin-top: 6px !important; }
+  .tabs { gap: 0; justify-content: space-between; }   /* all five Expert tabs fit without sideways scrolling */
+  .tab { padding: 0 7px; font-size: 13.5px; }
+  .demo-row { flex-direction: column; align-items: stretch; }
+  .welcome-steps { display: none; }   /* the hint pill and the buttons carry these steps; the actions stay in view */
+  /* 16px inputs: iOS Safari zooms the whole page on focus below that */
+  body .search input, body .panel select, body .panel input { font-size: 16px; }
   .topbar { right: 10px; }
   .brand b { display: none; }
   .brand { padding: 0 12px; }
   .search { max-width: none; }
   .hint { left: 58px; right: 10px; top: 60px; bottom: auto; transform: none; max-width: none; font-size: 12.5px; padding: 7px 10px; }
   .tools { top: 108px; }
-  .tool { width: 40px; height: 40px; }
-  .leaflet-control-zoom a { width: 40px !important; height: 40px !important; line-height: 40px !important; }
+  .tool { width: 44px; height: 44px; }     /* 44 px is the minimum comfortable touch target */
+  .leaflet-control-zoom a { width: 44px !important; height: 44px !important; line-height: 44px !important; }
   /* the welcome card takes the bottom sheet's place until it is answered */
   .coach { left: 8px; right: 8px; width: auto; top: auto; bottom: 8px; }
   body:has(.coach:not([hidden])) .panel { visibility: hidden; }
-  body #demo-bar { left: 8px; right: 8px; bottom: calc(54vh + 16px); padding: 8px 10px; }
+  body #demo-bar { left: 8px; right: 8px; bottom: calc(var(--sheet-h) + var(--sheet-bottom) + 8px); padding: 8px 10px; }
   body .demo-cap { font-size: 12.5px; }
   .leaflet-control-attribution { max-width: 250px; }
   .t-display { font-size: 23px; }
   .bars { height: 150px; gap: 6px; }
-  .leaflet-bottom.leaflet-right { bottom: calc(54vh + 8px); }
+  .leaflet-bottom.leaflet-right { bottom: calc(var(--sheet-h) + var(--sheet-bottom)); }
 }
+@media (max-width: 820px) and (max-height: 740px) { .welcome-intro { display: none; } }   /* short phones: heading and both buttons first */
+/* touch: no 300 ms tap delay, no grey flash on tap */
+button, a, [data-act], select, summary { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
 /* ------------------------------------------------------------ welcome overlay */
 .welcome-logo { display: flex; justify-content: center; padding: 4px 0 8px; }

@@ -146,6 +146,7 @@ function setMode(mode) {
   S.mode = mode;
   const drawing = mode === 'draw';
   map.getContainer().classList.toggle('drawing', drawing);
+  document.body.dataset.mode = mode;      // phones slide the sheet down while drawing
   if (drawing) map.dragging.disable(); else map.dragging.enable();
   for (const [id, on] of [['tool-pan', mode === 'pan'], ['tool-draw', drawing], ['tool-points', mode === 'points']]) $(id).setAttribute('aria-pressed', String(on));
   updateHint();
@@ -584,9 +585,9 @@ function renderPick() {
     $('panel-body').innerHTML = `<div class="screen">
       <div class="stack">
         <h1 class="t-display">Is the climate changing where you live?</h1>
-        <p class="t-body">Check the evidence yourself. Trend Detective tests 45 years of NASA data for the place you choose and tells you, in plain words, whether a change is real.</p>
+        <p class="t-body welcome-intro">Check the evidence yourself. Trend Detective tests 45 years of NASA data for the place you choose and tells you, in plain words, whether a change is real.</p>
       </div>
-      <ol class="stack t-body" style="counter-reset:s">
+      <ol class="stack t-body welcome-steps" style="counter-reset:s">
         <li><strong>1.</strong> Find a place: move the map or use the search box.</li>
         <li><strong>2.</strong> Draw a loop around it with the pen tool (or hold Shift and drag).</li>
         <li><strong>3.</strong> Choose a question and press Investigate.</li>
@@ -2028,15 +2029,51 @@ function panelChartsFollow() {
   panelChartsTimer = setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
 }
 
+// On a phone the panel is a bottom sheet and the same handle is its grab bar: drag it up or down (it snaps to
+// small, half or tall), or tap it. While a loop is being drawn the sheet is tucked away, and a tap brings it back.
+const SHEET_SNAPS = [0.26, 0.54, 0.88];
+let sheetFrac = SHEET_SNAPS[1];
+const isPhone = () => window.matchMedia('(max-width: 820px)').matches;
+function setSheetFrac(f) {
+  sheetFrac = Math.min(SHEET_SNAPS[2], Math.max(0.18, f));
+  document.documentElement.style.setProperty('--sheet-h', `${Math.round(sheetFrac * window.innerHeight)}px`);
+}
+function sheetDrag(e, h) {
+  e.preventDefault();
+  try { h.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointers: dragging still works */ }
+  document.body.classList.add('resizing');
+  const y0 = e.clientY, f0 = sheetFrac;
+  let moved = false;
+  const move = (ev) => {
+    if (Math.abs(ev.clientY - y0) > 6) moved = true;
+    if (moved) { setSheetFrac(f0 + (y0 - ev.clientY) / window.innerHeight); panelChartsFollow(); }
+  };
+  const up = () => {
+    document.body.classList.remove('resizing');
+    h.removeEventListener('pointermove', move);
+    h.removeEventListener('pointerup', up);
+    h.removeEventListener('pointercancel', up);
+    if (!moved && S.mode === 'draw') { setMode('pan'); return; }
+    const nearest = SHEET_SNAPS.reduce((a, b) => (Math.abs(b - sheetFrac) < Math.abs(a - sheetFrac) ? b : a));
+    setSheetFrac(moved ? nearest : (sheetFrac < 0.7 ? SHEET_SNAPS[2] : SHEET_SNAPS[1]));
+    panelChartsFollow();
+  };
+  h.addEventListener('pointermove', move);
+  h.addEventListener('pointerup', up);
+  h.addEventListener('pointercancel', up);
+}
+
 function initPanelResize() {
   const h = $('panel-resize');
   if (!h) return;
   h.setAttribute('aria-valuemin', PANEL_MIN);
   const wanted = () => parseInt(pref.get('panelW', ''), 10) || PANEL_DEFAULT;
   setPanelWidth(wanted(), false);
+  if (isPhone()) setSheetFrac(sheetFrac);
 
   h.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    if (isPhone()) return sheetDrag(e, h);
     e.preventDefault();
     h.setPointerCapture(e.pointerId);
     document.body.classList.add('resizing');
@@ -2055,6 +2092,12 @@ function initPanelResize() {
   });
   h.addEventListener('dblclick', () => { setPanelWidth(PANEL_DEFAULT); panelChartsFollow(); });
   h.addEventListener('keydown', (e) => {
+    if (isPhone()) {
+      const i = SHEET_SNAPS.indexOf(SHEET_SNAPS.reduce((a, b) => (Math.abs(b - sheetFrac) < Math.abs(a - sheetFrac) ? b : a)));
+      const to = { ArrowUp: SHEET_SNAPS[Math.min(2, i + 1)], ArrowDown: SHEET_SNAPS[Math.max(0, i - 1)], Home: SHEET_SNAPS[2], End: SHEET_SNAPS[0] }[e.key];
+      if (to !== undefined) { e.preventDefault(); setSheetFrac(to); panelChartsFollow(); }
+      return;
+    }
     const step = e.shiftKey ? 80 : 20;
     const to = { ArrowLeft: panelWidth() + step, ArrowRight: panelWidth() - step, Home: panelMax(), End: PANEL_MIN }[e.key];
     if (to === undefined) return;
@@ -2063,7 +2106,13 @@ function initPanelResize() {
     panelChartsFollow();
   });
   // A smaller window may squeeze the panel; growing the window back restores the chosen width.
-  window.addEventListener('resize', (e) => { if (e.isTrusted) setPanelWidth(wanted(), false); });
+  window.addEventListener('resize', (e) => {
+    if (!e.isTrusted) return;
+    setPanelWidth(wanted(), false);
+    if (isPhone()) setSheetFrac(sheetFrac);
+    h.setAttribute('aria-orientation', isPhone() ? 'horizontal' : 'vertical');
+  });
+  h.setAttribute('aria-orientation', isPhone() ? 'horizontal' : 'vertical');
 }
 
 (async function boot() {
