@@ -30,8 +30,10 @@ Use ONLY the facts in the JSON below. Rules:
 - 2 to 4 short sentences, plain words, no jargon (no "p-value", "OLS", "Mann-Kendall", "anomaly").
 - Do not write any number that is not written exactly the same way in the facts. Round nothing, compute nothing.
 - Say what changed, how sure we are (tier: significant = confident, suggestive = possible, none = no clear trend),
-  and, ONLY if a cross_check is present, what it says about a second NASA dataset. If there is no cross_check, or its
-  state is "single", do not mention other datasets or agreement at all.
+  and, ONLY if a cross_check is present, what it says about a second NASA dataset. If its state is "single" and its
+  headline says the second dataset can't confirm, say exactly that ("a second NASA dataset can't confirm this yet")
+  and nothing more about it. If there is no cross_check, or any other "single" headline, do not mention other
+  datasets or agreement at all.
 - If the quick_scan shows another variable changing, you may mention it in one short sentence, always with its
   certainty word: tier significant = "clearly", suggestive = "possibly". Never mention a variable whose tier is none
   as changing.
@@ -62,9 +64,23 @@ def claims_ok(summary: str, facts: dict) -> bool:
     state = (facts.get("cross_check") or {}).get("state")
     if state != "agree" and re.search(r"\bagree", low):
         return False
-    if state not in ("agree", "disagree") and re.search(r"dataset|second source|another source|satellite", low):
+    hedged = state == "single" and re.search(r"(can't|cannot|can not|not yet|does not|doesn't) (yet )?confirm", low)
+    if state not in ("agree", "disagree") and not hedged and re.search(r"dataset|second source|another source|satellite", low):
         return False
     return not re.search(r"\b(caus|because|due to|driven by|leads? to)\w*", low.replace("not its cause", ""))
+
+
+ENDING = "This shows a change, not its cause."
+
+
+def keep_unconfirmed(summary: str, facts: dict) -> str:
+    """If the second dataset can't confirm the trend, the summary says so even when Gemini left it out."""
+    cc = facts.get("cross_check") or {}
+    head = cc.get("headline", "")
+    if cc.get("state") != "single" or "can't confirm" not in head or "confirm" in summary.lower():
+        return summary
+    body = summary.replace(ENDING, "").rstrip()
+    return f"{body} {head.rstrip('.')}. {ENDING}".replace("  ", " ")
 
 
 def rank_next(facts: dict, questions: dict) -> list[str]:
@@ -99,6 +115,9 @@ def template(facts: dict, questions: dict) -> dict:
     if cc.get("state") == "agree":
         parts.append("A second NASA dataset shows the same direction")
     elif cc.get("state") == "disagree" and cc.get("headline"):
+        parts.append(cc["headline"])
+    elif cc.get("state") == "single" and cc.get("headline") and "not reachable" not in cc["headline"]:
+        # e.g. "The second dataset can't confirm this yet": the summary must not sound surer than the check
         parts.append(cc["headline"])
     text = ". ".join(p.rstrip(".") for p in parts if p)
     return {"summary": (text + ". " if text else "") + "This shows a change, not its cause.",
@@ -145,6 +164,7 @@ def explain(facts: dict, questions: dict) -> dict:
     if not claims_ok(summary, facts):
         return {**fallback, "why_template": "Gemini's text was rejected (a claim about other datasets or causes "
                                             "that the app did not establish)."}
+    summary = keep_unconfirmed(summary, facts)
     result = {"summary": summary, "next": nxt or fallback["next"], "source": "gemini"}
     cache.put(ck, result)
     return result

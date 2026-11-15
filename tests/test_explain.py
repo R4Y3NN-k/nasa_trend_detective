@@ -105,3 +105,28 @@ def test_template_says_it_plainly_without_copying_the_headline():
     assert s.startswith("Here, air temperature went up by about 0.88 °C between 1981 and 2025.")
     assert "came recently" in s and "same direction" in s and s.endswith("This shows a change, not its cause.")
     assert "per decade" not in s                        # not a copy of the headline
+
+
+def test_template_keeps_an_unconfirmed_cross_check():
+    facts = {"var_id": "T2M", "verdict": {"variable": "Air temperature", "tier": "significant",
+                                          "total_change": "+1.35 °C", "years": "1981–2025"},
+             "cross_check": {"state": "single", "headline": "The second dataset can't confirm this yet", "detail": ""}}
+    assert "can't confirm this yet" in ex.template(facts, {})["summary"]
+    facts["cross_check"]["headline"] = "Second dataset not reachable right now"
+    assert "dataset" not in ex.template(facts, {})["summary"]
+
+
+def test_claims_ok_allows_an_honest_cannot_confirm_only():
+    single = {"cross_check": {"state": "single"}}
+    assert ex.claims_ok("It is warming. A second NASA dataset can't confirm this yet.", single)
+    assert not ex.claims_ok("It is warming, and a second dataset shows it too.", single)
+    assert not ex.claims_ok("Another dataset can't confirm it.", {})
+
+
+def test_gemini_summary_keeps_an_unconfirmed_cross_check():
+    facts = {"cross_check": {"state": "single", "headline": "The second dataset can't confirm this yet"}}
+    s = ex.keep_unconfirmed("It is getting warmer. This shows a change, not its cause.", facts)
+    assert s == "It is getting warmer. The second dataset can't confirm this yet. This shows a change, not its cause."
+    assert ex.keep_unconfirmed(s, facts) == s                                   # already said: unchanged
+    other = {"cross_check": {"state": "single", "headline": "Second dataset not reachable right now"}}
+    assert ex.keep_unconfirmed("Warmer. This shows a change, not its cause.", other).count("dataset") == 0

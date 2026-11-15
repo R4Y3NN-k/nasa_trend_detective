@@ -1,16 +1,16 @@
 // SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team
-// Offline place list for "Go to a place": our demo areas first, then capitals and large cities.
+// Offline place list for "Go to a place": the areas we checked first, then capitals and large cities.
 // [name, country or note, latitude, longitude]. Bundled, so the search works with no third-party service.
 'use strict';
 window.TD_PLACES = [
-  ['Tunis', 'Tunisia · demo area', 36.8, 10.18],
-  ['High Atlas', 'Morocco · demo area', 31.5, -7.5],
-  ['Riyadh', 'Saudi Arabia · demo area', 24.71, 46.68],
-  ['Manitoba', 'Canada · demo area', 50.0, -97.5],
-  ['Nile Delta', 'Egypt · demo area', 30.9, 31.2],
-  ['Western Sahel', 'Mali and Senegal · demo area', 14.5, -11.0],
-  ['Luanda', 'Angola · demo area', -8.84, 13.23],
-  ['Namibe', 'Angola · demo area', -15.2, 12.15],
+  ['Tunis', 'Tunisia', 36.8, 10.18],
+  ['High Atlas', 'Morocco', 31.5, -7.5],
+  ['Riyadh', 'Saudi Arabia', 24.71, 46.68],
+  ['Manitoba', 'Canada', 50.0, -97.5],
+  ['Nile Delta', 'Egypt', 30.9, 31.2],
+  ['Western Sahel', 'Mali and Senegal', 14.5, -11.0],
+  ['Luanda', 'Angola', -8.84, 13.23],
+  ['Namibe', 'Angola', -15.2, 12.15],
   ['Sfax', 'Tunisia', 34.74, 10.76], ['Gafsa', 'Tunisia', 34.42, 8.78], ['Tozeur', 'Tunisia', 33.92, 8.13],
   ['Kairouan', 'Tunisia', 35.68, 10.1], ['Bizerte', 'Tunisia', 37.27, 9.87], ['Tataouine', 'Tunisia', 32.93, 10.45],
   ['Algiers', 'Algeria', 36.75, 3.06], ['Tamanrasset', 'Algeria', 22.79, 5.53], ['Rabat', 'Morocco', 34.02, -6.83],

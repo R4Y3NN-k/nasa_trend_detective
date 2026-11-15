@@ -59,7 +59,8 @@ const ICONS = {
   save: '<path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/>',
   print: '<path d="M7 8V4h10v4"/><path d="M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v6H7z"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>', hill: '<path d="M3 19l6-10 4 6 2-3 6 7z"/>',
-  spin: '<path d="M21 12a9 9 0 1 1-9-9"/>',
+  pin: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
 };
 const ic = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -545,7 +546,10 @@ function renderPick() {
         <li><strong>2.</strong> Draw a loop around it with the pen tool (or hold Shift and drag).</li>
         <li><strong>3.</strong> Choose a question and press Investigate.</li>
       </ol>
-      <button type="button" class="btn demo-btn" data-act="rundemo">${ic('spin')} Use my location</button>
+      <div class="row tight demo-row">
+        <button type="button" class="btn" data-act="example">${ic('play')} Watch an example</button>
+        <button type="button" class="btn quiet" data-act="rundemo">${ic('pin')} Use my location</button>
+      </div>
       ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
     </div>`;
     $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>Investigate ${ic('next')}</button>`;
@@ -1160,7 +1164,7 @@ $('place-results').addEventListener('click', (e) => { const b = e.target.closest
 document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.search')) searchClose(); });
 $('hint-action').addEventListener('click', () => { if (S.place) selectAround(S.place); });
 
-// ---------------------------------------------------------------- first-run welcome: watch demo or explore
+// ---------------------------------------------------------------- first-run welcome: example, your location, or explore
 function showWelcome() {
   const el = $('coach');
   el.hidden = false;
@@ -1170,7 +1174,8 @@ function showWelcome() {
     </div>
     <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
     <div class="row stack tight" style="gap:8px;margin-top:4px">
-      <button type="button" class="btn wide" data-welcome="demo">Use my location</button>
+      <button type="button" class="btn wide" data-welcome="example">${ic('play')} Watch an example: Tunis</button>
+      <button type="button" class="btn wide quiet" data-welcome="location">${ic('pin')} Use my location</button>
       <button type="button" class="link" style="text-align:center" data-welcome="skip">Explore yourself</button>
     </div>`;
 }
@@ -1179,7 +1184,8 @@ $('coach').addEventListener('click', (e) => {
   if (!b) return;
   $('coach').hidden = true;
   pref.set('coach', 'done');
-  if (b.dataset.welcome === 'demo') runDemo();
+  if (b.dataset.welcome === 'example') runExample();
+  else if (b.dataset.welcome === 'location') runDemo();
 });
 
 // ---------------------------------------------------------------- events (one delegated listener per kind)
@@ -1324,7 +1330,38 @@ async function runDemo() {
   demoAbort = null;
 }
 
+// A fixed case that always plays to the verdict, so the demo works offline from location and on any projector.
+const EXAMPLE = { name: 'Tunis', lat: 36.8, lon: 10.18, question: 'hotter', label: 'Tunis, Tunisia: is it getting hotter?' };
+
+async function runExample() {
+  if (demoRunning) return;
+  demoRunning = true;
+  pref.set('coach', 'done');
+  $('coach').hidden = true;
+  try {
+    if (S.screen === 'verdict') newCase();
+    demoOverlay(0, 3, `Example: ${EXAMPLE.label}`);
+    S.question = EXAMPLE.question; S.variable = null; S.userChose = true;
+    S.place = { name: EXAMPLE.name, lat: EXAMPLE.lat, lon: EXAMPLE.lon };
+    selectAround(S.place, 0.6);
+    await demoPoll(() => S.climate !== null, 300, 15000);
+    adoptQuestion(); renderPanel();
+    demoOverlay(1, 3, 'Testing 45 years of NASA data for this area…');
+    await demoWait(1500);
+    investigate();
+    await demoPoll(() => S.screen === 'verdict' && S.result, 300, 30000);
+    demoOverlay(2, 3, 'The verdict: the rate per decade, how sure we are, and a second NASA dataset');
+    await demoPoll(() => S.explain && S.explain.status !== 'loading', 400, 90000);
+    demoOverlay(3, 3, 'Now try your own area: draw a loop on the map');
+    await demoWait(8000);
+  } catch (_) { /* stopped */ }
+  demoHide();
+  demoRunning = false;
+  demoAbort = null;
+}
+
 ACTIONS.rundemo = () => runDemo();
+ACTIONS.example = () => runExample();
 
 // ---------------------------------------------------------------- boot
 // ------------------------------------------------------------------ resizable panel

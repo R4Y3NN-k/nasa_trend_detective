@@ -267,7 +267,11 @@ details.menu .items button:hover { background: var(--teal-s); }
   .tools { top: 108px; }
   .tool { width: 40px; height: 40px; }
   .leaflet-control-zoom a { width: 40px !important; height: 40px !important; line-height: 40px !important; }
-  .coach { left: 58px; right: 10px; width: auto; top: 112px; }
+  /* the welcome card takes the bottom sheet's place until it is answered */
+  .coach { left: 8px; right: 8px; width: auto; top: auto; bottom: 8px; }
+  body:has(.coach:not([hidden])) .panel { visibility: hidden; }
+  body #demo-bar { left: 8px; right: 8px; bottom: calc(54vh + 16px); padding: 8px 10px; }
+  body .demo-cap { font-size: 12.5px; }
   .leaflet-control-attribution { max-width: 250px; }
   .t-display { font-size: 23px; }
   .bars { height: 150px; gap: 6px; }
@@ -280,9 +284,10 @@ details.menu .items button:hover { background: var(--teal-s); }
 .welcome-logo svg { width: 80px; height: 64px; --lg-arc: #1E9E4A; --lg-planet: #0B6B3A; --lg-bg: var(--white); --lg-leaf1: #3FA34D; --lg-leaf2: #7BC043; }
 .coach .row.stack { flex-direction: column; align-items: stretch; }
 
-/* ------------------------------------------------------------ demo walkthrough bar */
-#demo-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000; padding: 10px 16px; background: var(--char); color: var(--white); }
+/* ------------------------------------------------------------ demo walkthrough bar (over the map, never over the panel) */
+#demo-bar { position: fixed; bottom: 26px; left: 70px; right: calc(var(--panel-w) + 30px); z-index: 1001; padding: 10px 14px; background: var(--char); color: var(--white); border-radius: var(--r-m); box-shadow: var(--shadow-s); }
 #demo-bar[hidden] { display: none; }
+body:has(#demo-bar:not([hidden])) .hint { visibility: hidden; }
 .demo-inner { display: flex; align-items: center; gap: 12px; max-width: 680px; margin: 0 auto; }
 .demo-pips { display: flex; gap: 6px; }
 .demo-pip { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.25); }
@@ -292,10 +297,9 @@ details.menu .items button:hover { background: var(--teal-s); }
 .demo-cap { flex: 1; font-size: 13.5px; font-weight: 500; }
 .demo-stop { padding: 5px 14px; border: 1px solid rgba(255,255,255,.35); border-radius: var(--r-s); background: transparent; color: var(--white); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
 .demo-stop:hover { background: rgba(255,255,255,.12); }
-.demo-btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; }
-.demo-btn .ico { width: 16px; height: 16px; animation: demo-spin 1.8s linear infinite; animation-play-state: paused; }
-.demo-btn:hover .ico { animation-play-state: running; }
-@keyframes demo-spin { to { transform: rotate(360deg); } }
+.demo-row { flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.demo-row .btn, .coach .btn { gap: 8px; }
+.demo-row .ico, .coach .btn .ico { width: 18px; height: 18px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
