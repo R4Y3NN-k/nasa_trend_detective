@@ -262,6 +262,23 @@ details.menu .items button:hover { background: var(--teal-s); }
   .leaflet-bottom.leaflet-right { bottom: calc(54vh + 8px); }
 }
 
+/* ------------------------------------------------------------ demo walkthrough bar */
+#demo-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000; padding: 10px 16px; background: var(--char); color: var(--white); }
+#demo-bar[hidden] { display: none; }
+.demo-inner { display: flex; align-items: center; gap: 12px; max-width: 680px; margin: 0 auto; }
+.demo-pips { display: flex; gap: 6px; }
+.demo-pip { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.25); }
+.demo-pip.done { background: var(--teal-e); }
+.demo-pip.on { background: var(--white); animation: demo-pulse 1.2s infinite ease-in-out; }
+@keyframes demo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+.demo-cap { flex: 1; font-size: 13.5px; font-weight: 500; }
+.demo-stop { padding: 5px 14px; border: 1px solid rgba(255,255,255,.35); border-radius: var(--r-s); background: transparent; color: var(--white); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.demo-stop:hover { background: rgba(255,255,255,.12); }
+.demo-btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; }
+.demo-btn .ico { width: 16px; height: 16px; animation: demo-spin 1.8s linear infinite; animation-play-state: paused; }
+.demo-btn:hover .ico { animation-play-state: running; }
+@keyframes demo-spin { to { transform: rotate(360deg); } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

@@ -541,6 +541,7 @@ function renderPick() {
         <li><strong>3.</strong> Choose a question and press Investigate.</li>
       </ol>
       <p class="t-body">Or start with an example: ${demo}</p>
+      <button type="button" class="btn demo-btn" data-act="rundemo">${ic('spin')} Watch the demo</button>
       ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
     </div>`;
     $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>Investigate ${ic('next')}</button>`;
@@ -1221,6 +1222,95 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); }
   if (e.key === 'Escape' && S.mode === 'draw') { window.cancelLasso(); setMode('pan'); }
 });
+
+// ---------------------------------------------------------------- demo walkthrough: auto-playing guided cases
+const DEMO_CASES = [
+  { name: 'Tunis', question: 'hotter', caption: 'Is Tunis getting hotter? 45 years of NASA data…' },
+  { name: 'Manitoba', question: 'milder', caption: 'Are Manitoba\'s coldest nights getting milder?' },
+];
+
+let demoRunning = false, demoAbort = null;
+
+function demoWait(ms) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(resolve, ms);
+    demoAbort = () => { clearTimeout(id); reject(new Error('stopped')); };
+  });
+}
+
+function demoPoll(fn, interval, timeout) {
+  return new Promise((resolve, reject) => {
+    const end = Date.now() + timeout;
+    let id;
+    const check = () => {
+      if (fn()) { resolve(); return; }
+      if (Date.now() > end) { resolve(); return; }
+      id = setTimeout(check, interval);
+    };
+    demoAbort = () => { clearTimeout(id); reject(new Error('stopped')); };
+    check();
+  });
+}
+
+function demoOverlay(step, total, caption) {
+  let el = $('demo-bar');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'demo-bar';
+    document.body.appendChild(el);
+  }
+  const pips = Array.from({ length: total }, (_, i) =>
+    `<i class="demo-pip${i < step ? ' done' : ''}${i === step ? ' on' : ''}"></i>`).join('');
+  el.innerHTML = `<div class="demo-inner">
+    <span class="demo-pips">${pips}</span>
+    <span class="demo-cap">${esc(caption)}</span>
+    <button id="demo-stop" type="button" class="demo-stop">Stop demo</button>
+  </div>`;
+  el.hidden = false;
+  $('demo-stop').addEventListener('click', () => { if (demoAbort) demoAbort(); });
+}
+
+function demoHide() {
+  const el = $('demo-bar');
+  if (el) el.hidden = true;
+}
+
+async function runDemo() {
+  if (demoRunning) return;
+  demoRunning = true;
+  pref.set('coach', 'done');
+  coach(null);
+  try {
+    for (let i = 0; i < DEMO_CASES.length; i++) {
+      const c = DEMO_CASES[i];
+      demoOverlay(i, DEMO_CASES.length, c.caption);
+      if (S.screen === 'verdict') newCase();
+      const p = (window.TD_PLACES || []).find((x) => x[0] === c.name);
+      if (!p) continue;
+      goToPlace(p, false);
+      selectAround(S.place);
+      await demoPoll(() => S.climate !== null, 300, 12000);
+      if (S.questions.some((q) => q.id === c.question)) {
+        S.question = c.question; S.variable = null; S.userChose = true;
+      }
+      renderPanel();
+      await demoWait(600);
+      investigate();
+      await demoPoll(() => S.screen === 'verdict' && S.result, 300, 30000);
+      demoOverlay(i, DEMO_CASES.length, c.caption);
+      await demoPoll(() => S.explain && S.explain.status !== 'loading', 400, 20000);
+      renderPanel();
+      await demoWait(9000);
+    }
+    demoOverlay(DEMO_CASES.length, DEMO_CASES.length, 'Demo complete — try your own area!');
+    await demoWait(3000);
+  } catch (_) { /* stopped */ }
+  demoHide();
+  demoRunning = false;
+  demoAbort = null;
+}
+
+ACTIONS.rundemo = () => runDemo();
 
 // ---------------------------------------------------------------- boot
 (async function boot() {
