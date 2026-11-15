@@ -540,7 +540,7 @@ function renderPick() {
         <li><strong>2.</strong> Draw a loop around it with the pen tool (or hold Shift and drag).</li>
         <li><strong>3.</strong> Choose a question and press Investigate.</li>
       </ol>
-      <button type="button" class="btn demo-btn" data-act="rundemo">${ic('spin')} Watch the demo where I am</button>
+      <button type="button" class="btn demo-btn" data-act="rundemo">${ic('spin')} Use my location</button>
       ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
     </div>`;
     $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>Investigate ${ic('next')}</button>`;
@@ -1155,7 +1155,7 @@ function showWelcome() {
     </div>
     <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
     <div class="row stack tight" style="gap:8px;margin-top:4px">
-      <button type="button" class="btn wide" data-welcome="demo">Watch the demo where I am</button>
+      <button type="button" class="btn wide" data-welcome="demo">Use my location</button>
       <button type="button" class="link" style="text-align:center" data-welcome="skip">Explore yourself</button>
     </div>`;
 }
@@ -1276,7 +1276,8 @@ async function runDemo() {
   pref.set('coach', 'done');
   $('coach').hidden = true;
   try {
-    if (S.screen === 'verdict') newCase();
+    const keep = { variable: S.variable, question: S.question, userChose: S.userChose };
+    if (S.screen === 'verdict') { newCase(); Object.assign(S, keep); }
     demoOverlay(0, 1, 'Finding your location…');
     const here = await new Promise((resolve) => {
       if (!navigator.geolocation) return resolve(null);
@@ -1287,7 +1288,13 @@ async function runDemo() {
     S.place = { name: 'this area', lat, lon };
     selectAround(S.place, 0.6);
     await demoPoll(() => S.climate !== null, 300, 15000);
-    const qLabel = (S.questions.find((q) => q.id === S.question) || {}).label || 'climate trend here';
+    const qLabel = S.variable ? S.meta.variables[S.variable].name
+      : (S.questions.find((q) => q.id === S.question) || {}).label || 'climate trend here';
+    if (!keep.userChose && !keep.variable) {
+      demoOverlay(0, 1, 'Your area is ready: choose a question or a variable, then press Investigate');
+      await demoWait(6000);
+      throw new Error('handed over');
+    }
     demoOverlay(0, 1, qLabel);
     await demoWait(600);
     investigate();
