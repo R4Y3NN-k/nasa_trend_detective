@@ -1,33 +1,68 @@
 <p align="center">
-  <img src="docs/img/verdict.webp" alt="Trend Detective: verdict for an area south of Tunis, hottest temperature of the month rising about 0.39 °C per decade" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/logo-dark.svg">
+    <img src="docs/img/logo.svg" alt="Trend Detective logo: a green planet with a ring, inside an orbit, with leaves growing from it" width="140">
+  </picture>
+</p>
+
+<h1 align="center">Trend Detective</h1>
+
+<p align="center">
+  <b>Is the climate changing where you live? Check the evidence yourself, from 45 years of NASA data.</b><br>
+  <sub>NASA Space Apps Challenge 2026 · <i>Be An Earth System Trend Detective</i></sub>
 </p>
 
 <p align="center">
   <a href="#run-it">Run it</a> &nbsp;·&nbsp;
-  <a href="#data-sources">Data</a> &nbsp;·&nbsp;
+  <a href="#a-case-step-by-step">Screenshots</a> &nbsp;·&nbsp;
   <a href="#how-a-verdict-is-decided">How a verdict is decided</a> &nbsp;·&nbsp;
+  <a href="#nasa-services">Data</a> &nbsp;·&nbsp;
   <a href="#scientific-integrity">Scientific integrity</a> &nbsp;·&nbsp;
-  <a href="#example-results">Example results</a> &nbsp;·&nbsp;
-  <a href="docs/validation.md">Validation</a> &nbsp;·&nbsp;
-  <a href="docs/demo_stories.md">Demo stories</a>
+  <a href="#built-with">Built with</a> &nbsp;·&nbsp;
+  <a href="docs/validation.md">Validation</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/data-NASA%20POWER%20%2B%20AIRS%20%2B%20GPM%20IMERG-0B3D91?style=flat-square" alt="NASA data sources">
-  <img src="https://img.shields.io/badge/period-1981%E2%80%932025-1D4ED8?style=flat-square" alt="1981–2025">
-  <img src="https://img.shields.io/badge/python-3.12%2B-1D4ED8?style=flat-square" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-100%20passing-10B981?style=flat-square" alt="100 tests passing">
+  <img src="https://img.shields.io/badge/data-NASA%20POWER%20%C2%B7%20AIRS%20%C2%B7%20GPM%20IMERG-0B3D91?style=flat-square&logo=nasa&logoColor=white" alt="NASA data sources">
+  <img src="https://img.shields.io/badge/period-1981%E2%80%932025-0B6B3A?style=flat-square" alt="1981–2025">
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/tests-100%20passing-1E9E4A?style=flat-square&logo=pytest&logoColor=white" alt="100 tests passing">
+  <img src="https://img.shields.io/badge/build%20step-none-7BC043?style=flat-square" alt="No build step">
+</p>
+
+<p align="center">
+  <img src="docs/img/verdict.webp" alt="Trend Detective: verdict for an area south of Tunis, hottest temperature of the month rising about 0.39 °C per decade" width="100%">
 </p>
 
 ---
 
-Most arguments about climate are not won with data. Someone says the winter was mild, someone else says last year was worse, and the conversation stops there. The numbers that would settle it are public — NASA has been releasing them for forty-five years — but no one looks, because looking means downloading, aligning and testing 45 years of monthly files for one piece of ground.
+## In one minute
 
-**Trend Detective** does that in under two seconds, for any area on Earth. Draw a loop on a map, or press **Use my location**, and the application reads the NASA POWER grid cells under it, classifies the local climate from the area's own long-term means, proposes the questions that matter there, and returns a verdict: *significant*, *possible*, or *no clear trend*, with the rate per decade and its 95 % confidence interval. The verdict is tested twice (parametric and non-parametric, and both must agree) and checked against an independent NASA dataset (AIRS or GPM IMERG, served live by NASA Giovanni).
+Most arguments about climate are not won with data. Someone says the winter was mild, someone else says last year was worse, and the conversation stops there. The numbers that would settle it are public — NASA has published them for 45 years — but few people look, because looking means downloading, aligning and testing decades of monthly files for one piece of ground.
 
-The tests live in [`td/analyze.py`](td/analyze.py) and the checks live in the test suite. Our back-end only carries numbers: the verdict is whatever the two tests and the cross-check say, not what we want them to say.
+**Trend Detective does that in about two seconds, for any area on Earth.** You pick a place on a map; the app reads NASA's records for it and tells you, in one plain sentence, whether something has really changed, how fast, and how sure we can be.
 
-**NASA Space Apps Challenge 2026 — *Be An Earth System Trend Detective*.**
+| | |
+|---|---|
+| **Who it is for** | Anyone curious about their own area: students, teachers, journalists, local decision-makers. No statistics needed; an Expert switch shows everything for those who want it. |
+| **What you do** | Draw a loop on the map, press **Use my location**, or press **Watch an example**. Then choose a question and press **Investigate**. |
+| **What you get** | A verdict (*clearly rising*, *clearly falling*, *possible* or *no clear trend*), the rate per decade with its 95 % range, decade bars, the seasons, a plain-words summary, and a check against a second NASA dataset. |
+| **Why you can trust it** | Two independent statistical tests must agree before a trend is called clear. A second NASA instrument checks the result. The AI only writes sentences; every number comes from the app, and the app rejects any it did not compute. |
+| **What it never says** | Why. Every verdict ends with *"This shows a change, not its cause."* |
+
+<details>
+<summary><b>Five words used throughout</b></summary>
+<br>
+
+| Word | Meaning |
+|---|---|
+| **Grid cell** | NASA POWER divides the world into boxes of 0.5° × 0.625° (about 55 × 60 km). Each one has its own 45-year monthly record. |
+| **Anomaly** | The difference from what is usual for that month in that place. Removes the seasons so a trend can be seen. |
+| **Trend per decade** | How much the anomaly changes every ten years, on average, over 1981–2025. |
+| **95 % range** | The range the true trend is very likely to lie in. If it does not include zero, the change is unlikely to be chance. |
+| **p-value / q-value** | How surprising the trend would be if nothing were changing. The q-value corrects for testing many cells at once. |
+
+</details>
 
 ## A case, step by step
 
@@ -154,6 +189,41 @@ Live numbers, November 2026. Each case is encoded in the page address, so a link
 | **Riyadh** | Hottest day of the month **+0.36 °C / decade** since 1981 (significant). |
 | **Manitoba, Canada** | Coldest-night temperature **+0.43 °C / decade** (significant). Snow cover: no clear change yet. |
 | **High Atlas, Morocco** | Higher ground +0.37, lower ground +0.31 °C / decade; the gap is inside the uncertainty, so the application does not call one faster. |
+
+## Built with
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/NumPy-013243?style=for-the-badge&logo=numpy&logoColor=white" alt="NumPy">
+  <img src="https://img.shields.io/badge/pandas-150458?style=for-the-badge&logo=pandas&logoColor=white" alt="pandas">
+  <img src="https://img.shields.io/badge/SciPy-8CAAE6?style=for-the-badge&logo=scipy&logoColor=white" alt="SciPy">
+  <img src="https://img.shields.io/badge/statsmodels-4051B5?style=for-the-badge" alt="statsmodels">
+  <img src="https://img.shields.io/badge/pymannkendall-0B6B3A?style=for-the-badge" alt="pymannkendall">
+  <br>
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black" alt="JavaScript">
+  <img src="https://img.shields.io/badge/HTML5-E34F26?style=for-the-badge&logo=html5&logoColor=white" alt="HTML5">
+  <img src="https://img.shields.io/badge/CSS-1572B6?style=for-the-badge&logo=css&logoColor=white" alt="CSS">
+  <img src="https://img.shields.io/badge/Leaflet-199900?style=for-the-badge&logo=leaflet&logoColor=white" alt="Leaflet">
+  <img src="https://img.shields.io/badge/Plotly-3F4F75?style=for-the-badge&logo=plotly&logoColor=white" alt="Plotly">
+  <img src="https://img.shields.io/badge/OpenStreetMap-7EBC6F?style=for-the-badge&logo=openstreetmap&logoColor=white" alt="OpenStreetMap">
+  <br>
+  <img src="https://img.shields.io/badge/NASA%20POWER-0B3D91?style=for-the-badge&logo=nasa&logoColor=white" alt="NASA POWER">
+  <img src="https://img.shields.io/badge/NASA%20Giovanni-0B3D91?style=for-the-badge&logo=nasa&logoColor=white" alt="NASA Giovanni">
+  <img src="https://img.shields.io/badge/Earthdata%20harmony--py-0B3D91?style=for-the-badge&logo=nasa&logoColor=white" alt="harmony-py">
+  <img src="https://img.shields.io/badge/Google%20Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white" alt="Google Gemini">
+  <img src="https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white" alt="pytest">
+  <img src="https://img.shields.io/badge/Streamlit%20(prototype)-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white" alt="Streamlit">
+</p>
+
+| Layer | Technology | Why this choice |
+|---|---|---|
+| **Statistics** | NumPy, pandas, SciPy, statsmodels (OLS with Newey-West errors), pymannkendall (Mann-Kendall, Hamed-Rao, Sen slope) | Standard, peer-reviewed implementations of the two tests, rather than our own |
+| **Server** | Python standard-library `http.server` | No framework to install or configure; one command starts the app |
+| **Front end** | Hand-written HTML, CSS and JavaScript, Leaflet for the map, Plotly for the charts | No build step, no `node_modules`; the page loads as it is written |
+| **Map data** | OpenStreetMap tiles, Natural Earth 1:110m land polygons (bundled) | The land mask and place search work offline, with no third-party lookup |
+| **NASA data** | NASA POWER point API (MERRA-2); AIRS and GPM IMERG through NASA Giovanni with `harmony-py` and Earthdata Login | One consistent 45-year global record, checked against independent instruments |
+| **Plain words** | Google Gemini, behind a number-and-claim validator | Readable summaries for non-experts, without letting the model invent figures |
+| **Tests** | pytest (100 offline tests, NASA and Gemini mocked), one Node check for the grid maths | The whole suite runs in about 30 seconds with no network |
 
 ## Run it
 

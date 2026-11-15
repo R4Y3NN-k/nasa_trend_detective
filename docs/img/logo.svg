@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 32" width="160" height="128" role="img" aria-label="Trend Detective logo">
+  <clipPath id="p"><circle cx="15" cy="16" r="7.5"/></clipPath>
+  <path d="M23.3 4.1A14.5 14.5 0 1 0 26.1 25.3" fill="none" stroke="#1E9E4A" stroke-width="1.8" stroke-linecap="round"/>
+  <ellipse cx="15" cy="16" rx="12" ry="3.2" transform="rotate(-22 15 16)" fill="none" stroke="#0B6B3A" stroke-width="2"/>
+  <circle cx="15" cy="16" r="7.5" fill="#0B6B3A"/>
+  <path d="M3 16A12 3.2 0 0 0 27 16" transform="rotate(-22 15 16)" fill="none" stroke="#FFFFFF" stroke-width="1.3" clip-path="url(#p)"/>
+  <path d="M26.1 25.3Q30 20 31 12" fill="none" stroke="#3FA34D" stroke-width="1" stroke-linecap="round"/>
+  <path d="M30.2 14.5Q30 7.5 36 6Q36 12.5 30.2 14.5Z" fill="#3FA34D"/>
+  <path d="M28.5 19.5Q32 13 38.5 15.5Q34.5 21 28.5 19.5Z" fill="#7BC043"/>
+  <path d="M27.5 23.2Q32 20.5 36.5 24.5Q31.5 27.5 27.5 23.2Z" fill="#3FA34D"/>
+</svg>
