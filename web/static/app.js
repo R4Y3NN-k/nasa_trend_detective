@@ -1146,25 +1146,34 @@ $('place-results').addEventListener('click', (e) => { const b = e.target.closest
 document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.search')) searchClose(); });
 $('hint-action').addEventListener('click', () => { if (S.place) selectAround(S.place); });
 
-// ---------------------------------------------------------------- first-run guide (three steps, shown once)
-const COACH = [
-  ['Find your place', 'Drag the map to move and scroll to zoom, or type a city in the search box above.'],
-  ['Draw a loop around it', 'Pick the pen tool on the left (or hold Shift and drag) and circle the area you care about. Each dot is one NASA grid cell.'],
-  ['Ask a question', 'Choose a question in the panel and press Investigate. You get a tested answer, with the evidence behind it.'],
-];
-function coach(step) {
+// ---------------------------------------------------------------- first-run welcome: watch demo or explore
+function showWelcome() {
   const el = $('coach');
-  if (step === null || step >= COACH.length) { el.hidden = true; pref.set('coach', 'done'); return; }
-  const [title, text] = COACH[step];
   el.hidden = false;
-  el.innerHTML = `<div class="steps" aria-hidden="true">${COACH.map((_, i) => `<i class="${i <= step ? 'on' : ''}"></i>`).join('')}</div>
-    <h2 class="t-title">${step + 1}. ${title}</h2><p class="t-body">${text}</p>
-    <div class="row between"><button type="button" class="link" data-coach="skip">Skip</button>
-      <button type="button" class="btn dark" data-coach="${step + 1}">${step === COACH.length - 1 ? 'Got it' : 'Next'}</button></div>`;
+  el.innerHTML = `
+    <div class="welcome-logo" aria-hidden="true">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" width="48" height="48">
+        <circle cx="20" cy="22" r="13" stroke="var(--teal)" stroke-width="2.2"/>
+        <ellipse cx="20" cy="22" rx="6" ry="13" stroke="var(--teal)" stroke-width="1.6" stroke-dasharray="3 2"/>
+        <line x1="7" y1="22" x2="33" y2="22" stroke="var(--teal)" stroke-width="1.6"/>
+        <path d="M12 27l4.5-5 4 3 5-7" stroke="var(--teal)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="34" cy="34" r="6" stroke="var(--teal)" stroke-width="2.2"/>
+        <line x1="38.2" y1="38.2" x2="42" y2="42" stroke="var(--teal)" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <h2 class="t-title" style="margin-top:4px">Trend Detective</h2>
+    <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
+    <div class="row stack tight" style="gap:8px;margin-top:4px">
+      <button type="button" class="btn wide" data-welcome="demo">Watch the demo</button>
+      <button type="button" class="link" style="text-align:center" data-welcome="skip">Explore yourself</button>
+    </div>`;
 }
 $('coach').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-coach]');
-  if (b) coach(b.dataset.coach === 'skip' ? null : +b.dataset.coach);
+  const b = e.target.closest('[data-welcome]');
+  if (!b) return;
+  $('coach').hidden = true;
+  pref.set('coach', 'done');
+  if (b.dataset.welcome === 'demo') runDemo();
 });
 
 // ---------------------------------------------------------------- events (one delegated listener per kind)
@@ -1173,7 +1182,7 @@ const ACTIONS = {
   back: () => backToPick(),
   new: () => newCase(),
   go: () => investigate(),
-  q: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; renderPanel(); renderPoints(); updateHash(); },
+  q: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; renderPanel(); updateHash(); },
   next: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; investigate(); },
   demo: (b) => { const p = (window.TD_PLACES || []).find((x) => x[0] === b.dataset.name); if (p) goToPlace(p, true); },
   tab: (b) => { S.tab = b.dataset.tab; if (S.tab === 'groups' && !S.groups) loadGroups(); renderPanel(); },
@@ -1328,5 +1337,5 @@ ACTIONS.rundemo = () => runDemo();
   setMode('pan');
   if (S.picked.size) selectionChanged(); else { renderPanel(); loadQuestions(); }
   if (reopenVerdict) investigate();
-  else if (!S.picked.size && pref.get('coach', '') !== 'done') coach(0);
+  else if (!S.picked.size && pref.get('coach', '') !== 'done') showWelcome();
 })();
