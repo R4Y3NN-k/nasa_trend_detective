@@ -272,6 +272,9 @@ function selectLoop(loop) {
 // A box of about 2° x 2° around a place from the search box.
 function selectAround(place, r = 1) {
   pushHistory();
+  // Our own box: widen it until it holds enough land, rather than adding cells from outside it.
+  const landIn = (k) => cellsIn(place.lat - k, place.lon - k, place.lat + k, place.lon + k, 1).filter((c) => S.isLand(c[0], c[1])).length;
+  if (S.isLand) while (r < 2.5 && landIn(r) < K_MIN) r += 0.3;
   const b = [[place.lat - r, place.lon - r], [place.lat - r, place.lon + r], [place.lat + r, place.lon + r], [place.lat + r, place.lon - r]];
   setLasso(b);
   selectLoop(b);
