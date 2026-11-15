@@ -1180,14 +1180,50 @@ function drawCmpLayer() {
 
 function cmpCard(k, side, v) {
   const r = side.res, d = v.decimals ?? 2, u = v.units || '', st = statusOf(r.tier, r.slope_decade);
-  const range = r.ci_decade ? `${fmt(r.ci_decade[0], d)} to ${fmt(r.ci_decade[1], d)}` : '–';
   return `<div class="cmp-card stack tight">
     <p class="t-cap"><span class="legend-sw cmp-${k}"></span><strong>${k.toUpperCase()}: ${esc(side.name)}</strong></p>
     <p><span class="t-title num">${fmt(r.slope_decade, d)}</span> <span class="t-cap">${esc(u)} ${term('decade', 'per decade')}</span></p>
     <span class="status ${st.cls}">${ic(st.icon)}${st.words} ${info(STATS.status, 'What does this status mean?')}</span>
-    ${S.ui === 'expert' ? `<p class="t-cap num">95% range ${info(STATS.range)}: ${range}<br>p = ${fmtP(r.p_ttest)} (fit), ${fmtP(r.p_mk)} (rank) · ${plural(side.points_used, 'land cell')}</p>`
-      : `<p class="t-cap">${plural(side.points_used, 'land cell')}</p>`}
+    <p class="t-cap">${plural(side.points_used, 'land cell')}</p>
   </div>`;
+}
+
+// Expert only: why the sentence says "faster" or "similar" (both 95% ranges on one scale), then every test, side by side.
+function cmpEvidenceHtml(D) {
+  const v = D.variable, d = v.decimals ?? 2, u = v.units || '', A = D.a.res, B = D.b.res;
+  const all = [...A.ci_decade, ...B.ci_decade, 0];
+  const pad = (Math.max(...all) - Math.min(...all)) * 0.12 || 1, lo = Math.min(...all) - pad, hi = Math.max(...all) + pad;
+  const pos = (x) => ((x - lo) / (hi - lo)) * 100;
+  const track = (k, r) => `<span><span class="legend-sw cmp-${k}"></span><strong>${k.toUpperCase()}</strong></span>
+    <div class="track"><span class="band ${k}" style="left:${pos(r.ci_decade[0])}%;width:${pos(r.ci_decade[1]) - pos(r.ci_decade[0])}%"></span><span class="zero" style="left:calc(${pos(0)}% - 1px)"></span><span class="est ${k}" style="left:calc(${pos(r.slope_decade)}% - 2px)"></span></div>`;
+  const apart = A.ci_decade[1] < B.ci_decade[0] || B.ci_decade[1] < A.ci_decade[0];
+  const range = (r) => `${fmt(r.ci_decade[0], d)} to ${fmt(r.ci_decade[1], d)}`;
+  const pct = (r) => (r.pct_decade === null || r.pct_decade === undefined ? '–' : `${fmt(r.pct_decade, 1)}%`);
+  const row = (label, tip, a, b) => `<tr><td>${tip ? label.replace('<small>', `${info(tip)}<small>`) : label}${tip && !label.includes('<small>') ? ` ${info(tip)}` : ''}</td><td class="n">${a}</td><td class="n">${b}</td></tr>`;
+  return `<hr class="rule no-print">
+    <section class="stack">
+      <div class="stack tight"><h2 class="t-title">Why the app says that</h2>
+        <p class="t-cap">Each band is the 95% range of a place's rate ${info(STATS.range)}; the mark is the best estimate; the grey line is zero (no change).</p></div>
+      <div class="cmp-range">${track('a', A)}${track('b', B)}</div>
+      <div class="ends" style="padding-left:34px"><span>${fmt(lo, d)}</span><span>${esc(u)} per decade</span><span>${fmt(hi, d)}</span></div>
+      <p class="t-body">${apart ? 'The two bands <strong>do not overlap</strong>: the gap between the two rates is larger than chance would explain.'
+        : 'The two bands <strong>overlap</strong>: the gap between the two rates could be chance, so the app does not call either place faster.'}</p>
+    </section>
+    <section class="stack">
+      <h2 class="t-title">The tests, side by side</h2>
+      <table class="tests cmp"><thead><tr><th></th><th class="n"><span class="legend-sw cmp-a"></span>A</th><th class="n"><span class="legend-sw cmp-b"></span>B</th></tr></thead><tbody>
+        ${row(`Rate <small>${esc(u)} per decade, straight line</small>`, STATS.rate, fmt(A.slope_decade, d), fmt(B.slope_decade, d))}
+        ${row(`Sen's slope <small>${esc(u)} per decade, robust</small>`, STATS.sen, fmt(A.sen_decade, d), fmt(B.sen_decade, d))}
+        ${row('95% range of the rate', '', range(A), range(B))}
+        ${row('Line test <small>p-value</small>', STATS.fit, fmtP(A.p_ttest), fmtP(B.p_ttest))}
+        ${row('Rank test <small>p-value</small>', STATS.rank, fmtP(A.p_mk), fmtP(B.p_mk))}
+        ${row(`Total change <small>${esc(u)} over the record</small>`, STATS.total, fmt(A.total_change, d), fmt(B.total_change, d))}
+        ${A.pct_decade !== null && A.pct_decade !== undefined ? row('Share of the average <small>per decade</small>', STATS.pct, pct(A), pct(B)) : ''}
+        ${row('Record <small>months used</small>', STATS.record, `${A.n_months}`, `${B.n_months}`)}
+        ${row('Land cells averaged', STATS.cells, `${D.a.points_used}`, `${D.b.points_used}`)}
+      </tbody></table>
+      <button type="button" class="link no-print" data-act="about" data-step="5" data-sub="3" style="align-self:flex-start">How two places are compared, with the formulas${ic('next', 's')}</button>
+    </section>`;
 }
 
 function renderCompare() {
@@ -1209,6 +1245,8 @@ function renderCompare() {
         <p class="t-cap">Average difference from usual in each decade.</p></div>
       <div id="cmp-decades" class="chart" style="height:200px"></div>
     </section>
+    ${S.ui === 'expert' ? cmpEvidenceHtml(D)
+      : `<button type="button" class="link no-print" data-act="ui" data-ui="expert" style="align-self:flex-start">See the tests behind this comparison${ic('next', 's')}</button>`}
   </div>`;
   $('panel-foot').innerHTML = `<div class="row">
       <button type="button" class="btn quiet" data-act="cswap">${ic('swap', 's')}Swap</button>
@@ -1390,146 +1428,393 @@ $('coach').addEventListener('click', (e) => {
 });
 
 // ---------------------------------------------------------------- Data & math window
-// One self-contained reference: where every number comes from (top) and the formula behind each step
-// (beneath it). Ordered like the app's own pipeline, so nothing needs saying twice.
-const fx = (formula, caption) => `<div class="fx"><div class="fx-f" aria-label="Formula">${formula}</div><p class="fx-c">${caption}</p></div>`;
+// A guided tour in six steps, one on screen at a time: a question, a plain answer, a sketch, then the formula.
+// Every formula card names each of its symbols and, when a case is open, shows that case's own numbers.
+const AB = { step: 0, sub: [0, 0, 0, 0, 0, 0] };
+const AB_STEPS = ['The data', 'One series', 'The trend', 'Luck?', 'The verdict', 'Maps & more'];
+
+const sym = (s, sub) => `<i>${s}</i>${sub ? `<sub>${sub}</sub>` : ''}`;
+const pEq = (p) => (p === null || p === undefined ? 'p unknown' : p < 0.001 ? 'p &lt; 0.001' : `p = ${p.toFixed(3)}`);
+const rnd = (i) => { const x = Math.sin(i * 12.9898) * 43758.5453; return x - Math.floor(x) - 0.5; };   // fixed wiggle for the sketches
+
+// yours: a string = the open case's numbers; null = no case open yet (shows a hint); undefined = nothing to show.
+function fxCard({ f, where, plain, yours }) {
+  return `<div class="fx">
+    <div class="fx-f">${f}</div>
+    <dl class="fx-w">${where.map(([s, def]) => `<dt>${s}</dt><dd>${def}</dd>`).join('')}</dl>
+    ${plain ? `<p class="fx-p"><strong>In plain words.</strong> ${plain}</p>` : ''}
+    ${yours ? `<p class="fx-y">${ic('pin', 's')}<span><strong>Your case.</strong> ${yours}</span></p>`
+      : yours === null ? `<p class="fx-y soft">${ic('pin', 's')}<span>Investigate a place and its own numbers appear here.</span></p>` : ''}
+  </div>`;
+}
+const abSeg = (labels) => `<div class="seg ab-seg" role="group" aria-label="Choose what to read">${labels.map((l, i) =>
+  `<button type="button" data-sub="${i}" aria-pressed="${AB.sub[AB.step] === i}">${l}</button>`).join('')}</div>`;
+
+// The case on screen, if any: its numbers are the app's own results, nothing is recomputed here.
+function abCase() {
+  const R = S.result;
+  if (!R || !R.res) return null;
+  const v = R.variable;
+  return { R, r: R.res, v, d: v.decimals ?? 2, u: v.units ? ` ${esc(v.units)}` : '' };
+}
+
+function sketchSeasons() {
+  const n = 60, pts = (x0, f) => Array.from({ length: n }, (_, i) => `${(x0 + (i / (n - 1)) * 200).toFixed(1)},${f(i).toFixed(1)}`).join(' ');
+  const raw = pts(8, (i) => 50 - 25 * Math.sin((2 * Math.PI * i) / 12) - 0.15 * i + 8 * rnd(i));
+  const ano = pts(312, (i) => 62 - 0.32 * i + 15 * rnd(i));
+  return `<figure class="sk"><svg viewBox="0 0 520 96" role="img" aria-label="Sketch: a wavy seasonal line becomes a flatter line of anomalies">
+    <polyline points="${raw}" class="sk-line grey"/>
+    <path d="M222 46h70M284 40l8 6-8 6" class="sk-arrow"/>
+    <text x="257" y="34" text-anchor="middle">minus the</text><text x="257" y="66" text-anchor="middle">usual month</text>
+    <line x1="312" x2="512" y1="53" y2="53" class="sk-zero"/>
+    <polyline points="${ano}" class="sk-line teal"/>
+  </svg><figcaption><span>Raw months: the seasons hide everything</span><span>Anomalies: only the unusual part is left</span></figcaption></figure>`;
+}
+
+function sketchTrend() {
+  const dots = Array.from({ length: 40 }, (_, i) => `<circle cx="${20 + i * 12}" cy="${(82 - 1.3 * i + 22 * rnd(i + 7)).toFixed(1)}" r="2.3"/>`).join('');
+  return `<figure class="sk"><svg viewBox="0 0 520 114" role="img" aria-label="Sketch: a straight line through scattered dots, and its rise over ten years">
+    <g class="sk-dots">${dots}</g>
+    <line x1="20" y1="82" x2="488" y2="31.3" class="sk-line teal"/>
+    <path d="M200 62.5h120" class="sk-zero"/><path d="M320 62.5V49.5" class="sk-rise"/>
+    <text x="260" y="109" text-anchor="middle">over 10 years (dashes), the line rises by the red step: the rate per decade</text>
+  </svg><figcaption><span>Each dot is one month's anomaly. The line is the trend.</span></figcaption></figure>`;
+}
+
+function sketchRange() {
+  const row = (y, x0, x1, label) => `<line x1="170" x2="508" y1="${y}" y2="${y}" class="sk-axis"/>
+    <rect x="${x0}" y="${y - 6}" width="${x1 - x0}" height="12" rx="6" class="sk-band"/><rect x="${(x0 + x1) / 2 - 2}" y="${y - 9}" width="4" height="18" rx="2" class="sk-est"/>
+    <text x="8" y="${y + 4}">${label}</text>`;
+  return `<figure class="sk"><svg viewBox="0 0 520 98" role="img" aria-label="Sketch: a range that stays clear of zero, and one that includes zero">
+    ${row(22, 318, 452, 'Clear of zero: a real trend')}${row(56, 214, 348, 'Touches zero: maybe nothing')}
+    <line x1="262" x2="262" y1="4" y2="76" class="sk-zero"/><text x="262" y="92" text-anchor="middle">0 = no change</text>
+  </svg><figcaption><span>The band is the 95% range of the rate; the dark mark is the best estimate.</span></figcaption></figure>`;
+}
+
+// ------------------------------------------------ the six steps: each returns {q, lead, body}
+function abStep1(meta) {
+  const [y0, y1] = meta.years, C = abCase(), sub = AB.sub[0];
+  const vars = Object.entries(meta.variables).map(([id, v]) =>
+    `<li${C && C.R.var_id === id ? ' class="on"' : ''}><strong>${esc(v.name)}</strong><span class="unit">${esc(v.units || '')}</span><p>${esc(v.definition || '')}</p></li>`).join('');
+  const panels = [
+    `<ul class="ab-vars">${vars}</ul>${C ? '<p class="t-cap">The highlighted one is the variable of the case on screen.</p>' : ''}`,
+    `<p class="t-body">Over open water NASA POWER reports topsoil that is permanently soaked (wetness stuck at 1.0) or gives no soil value at all.
+      Cells like that are sea, so the app leaves them out: a "climate trend on land" should not be an average of waves.</p>
+     <p class="t-body">Two more house rules: a month with no value stays empty (nothing is invented to fill it), and the app refuses to
+      analyse fewer than 60 months, because a few years cannot show a climate trend.</p>`,
+    `<p class="t-body">One source can be wrong, so for temperature and rain the app asks a second NASA record the same question,
+      through NASA Giovanni:</p>
+     <ul class="ab-list"><li><strong>AIRS</strong>: an infrared instrument on the Aqua satellite, measuring temperature from space since 2002.</li>
+      <li><strong>GPM IMERG</strong>: rainfall from many satellites combined with rain gauges on the ground.</li></ul>
+     <p class="t-cap">Fair warning: they are not perfect strangers. MERRA-2 also uses AIRS readings, and its rain is corrected with gauges too.
+      But they are built by different teams with different methods, so agreement between them still means something.</p>`,
+  ];
+  return {
+    q: 'Where do the numbers come from?',
+    lead: `From NASA. Satellites, weather stations and balloons measure the real atmosphere. A NASA computer model called <strong>MERRA-2</strong>
+      blends all of them into one complete picture of the weather, month by month, since ${y0}. It is the best reconstruction we have,
+      but remember: it is a careful model, not one thermometer in your street.`,
+    body: `<div class="ab-flow" aria-label="From measurements to your area">
+        <div class="ab-srcs"><span>Satellites</span><span>Weather stations</span><span>Balloons</span></div><i>→</i>
+        <div class="ab-node"><strong>MERRA-2</strong><small>blends them</small></div><i>→</i>
+        <div class="ab-node"><span class="ab-grid" aria-hidden="true">${'<b></b>'.repeat(12)}</span><small>a grid of cells</small></div><i>→</i>
+        <div class="ab-node teal"><strong>Your area</strong><small>via NASA POWER</small></div>
+      </div>
+      <div class="ab-facts">
+        <div><strong class="num">${y0}–${y1}</strong><span>every single month</span></div>
+        <div><strong class="num">≈ 55 km</strong><span>height of one cell (0.5° × 0.625°)</span></div>
+        <div><strong class="num">${meta.max_points || 30}</strong><span>cells at most, land only</span></div>
+      </div>
+      ${abSeg(['What it measures', 'Land or sea?', 'A second opinion'])}${panels[sub]}`,
+  };
+}
+
+function abStep2() {
+  const C = abCase(), sub = AB.sub[1];
+  const cards = [
+    fxCard({
+      f: `<span class="ol">${sym('x')}</span><sub>t</sub> = ( Σ<sub>i</sub> ${sym('w', 'i')} · ${sym('x', 'i,t')} ) ⁄ ( Σ<sub>i</sub> ${sym('w', 'i')} )`,
+      where: [
+        [`<span class="ol">${sym('x')}</span><sub>t</sub>`, 'the value for your whole area in month <i>t</i> (what we want)'],
+        [sym('x', 'i,t'), 'the value of cell number <i>i</i> in that same month'],
+        [sym('w', 'i'), 'the weight of cell <i>i</i> = cos(its latitude). It is 1 at the equator and shrinks towards the poles'],
+        ['Σ<sub>i</sub>', '"add up over every land cell <i>i</i> you picked"'],
+      ],
+      plain: 'It is a fair average. Every cell gets a vote, but cells far from the equator are narrower on the ground, so their vote counts a little less. A cell with no value that month simply does not vote.',
+      yours: C ? `${plural(C.R.points_used, 'land cell')} averaged${C.R.points.length > C.R.points_used ? `; ${plural(C.R.points.length - C.R.points_used, 'sea cell')} left out` : ''}.` : null,
+    }),
+    fxCard({
+      f: `${sym('a', 't')} = ${sym('x', 't')} − ${sym('m', 'month(t)')}`,
+      where: [
+        [sym('a', 't'), 'the <strong>anomaly</strong> of month <i>t</i>: how unusual that month was'],
+        [sym('x', 't'), 'the area value that month (from the first formula)'],
+        [sym('m', 'month(t)'), 'the usual value for that calendar month: the average of every January for a January, every July for a July…'],
+      ],
+      plain: 'Compare each July with a normal July, and each January with a normal January. Summer is always hotter than winter, and that tells us nothing; what matters is whether this July was hotter than Julys usually are.',
+      yours: C ? `${C.r.n_months} monthly anomalies, from ${esc(C.r.start)} to ${esc(C.r.end)}${C.r.missing_months ? ` (${plural(C.r.missing_months, 'month')} missing and left empty)` : ''}.` : null,
+    }),
+  ];
+  return {
+    q: 'How do many cells become one line?',
+    lead: 'Your area covers several grid cells, and every place on Earth has seasons. Two small steps deal with both, and everything after this page works on the result.',
+    body: `${sketchSeasons()}${abSeg(['1 · Average the cells', '2 · Remove the seasons'])}${cards[sub]}`,
+  };
+}
+
+function abStep3() {
+  const C = abCase(), sub = AB.sub[2];
+  const cards = [
+    fxCard({
+      f: `${sym('a', 't')} = ${sym('α')} + ${sym('β')} · ${sym('t')} + ${sym('ε', 't')}&emsp;→&emsp;rate per decade = 10 · ${sym('β')}`,
+      where: [
+        [sym('a', 't'), 'the anomaly of month <i>t</i> (step 2)'],
+        [sym('t'), 'the date of that month, counted in years (March 2000 = 2000.17)'],
+        [sym('α'), 'where the line starts: its height at year zero. Only there to position the line'],
+        [sym('β'), 'the <strong>slope</strong>: how much the line climbs (or drops) each year. This is the number we are after'],
+        [sym('ε', 't'), 'the leftover: how far that month sits above or below the line'],
+        ['10 · <i>β</i>', 'ten years of slope = the "per decade" rate shown on the dashboard'],
+      ],
+      plain: 'Lay a ruler across the cloud of dots so that it passes as close as possible to all of them (it makes the leftovers, squared and added up, as small as they can be). How steep the ruler is tells you how fast things change.',
+      yours: C ? `The line gives <strong class="num">${fmt(C.r.slope_decade, C.d)}${C.u} per decade</strong>.` : null,
+    }),
+    fxCard({
+      f: `Sen's slope = 10 · median<sub>i&lt;j</sub> [ ( ${sym('a', 'j')} − ${sym('a', 'i')} ) ⁄ ( ${sym('t', 'j')} − ${sym('t', 'i')} ) ]`,
+      where: [
+        [`${sym('a', 'i')}, ${sym('a', 'j')}`, 'the anomalies of two different months: <i>i</i> is the earlier one, <i>j</i> the later one'],
+        [`${sym('t', 'i')}, ${sym('t', 'j')}`, 'the dates of those two months, in years'],
+        ['( … ) ⁄ ( … )', 'the slope between that one pair: change in value divided by time between them'],
+        ['median<sub>i&lt;j</sub>', 'do this for <em>every</em> possible pair, sort all the slopes, and keep the middle one'],
+        ['10 ·', 'turns "per year" into "per decade"'],
+      ],
+      plain: 'Ask every pair of months "how fast did things change between you two?", line up all the answers from smallest to largest, and take the one in the middle. One freak heatwave can pull a ruler, but it cannot move the middle of thousands of answers.',
+      yours: C ? `Sen's slope is <strong class="num">${fmt(C.r.sen_decade, C.d)}${C.u} per decade</strong>, ${C.r.tests_agree ? 'the same direction as the line' : 'not the same direction as the line, so the app will not call this trend clear'}.` : null,
+    }),
+    fxCard({
+      f: `total change = rate × ${sym('Y')} ⁄ 10&emsp;·&emsp;share = rate ⁄ <span class="ol">${sym('x')}</span> × 100`,
+      where: [
+        ['rate', 'the rate per decade from the straight line'],
+        [sym('Y'), 'the length of the record in years (months ÷ 12)'],
+        ['total change', 'how far the trend line moved from the first month to the last'],
+        [`<span class="ol">${sym('x')}</span>`, 'the long-term average of the raw values (not the anomalies)'],
+        ['share', 'the rate as a percentage of that average, per decade. Shown only for things with a true zero, like rain, snow or soil wetness'],
+      ],
+      plain: 'The total is the change along the trend line. It is <em>not</em> "last year minus first year", which would depend on whether those two years happened to be odd. The share lets a desert and a rainforest be compared fairly: losing 5 mm matters more where it rarely rains.',
+      yours: C ? `${fmt(C.r.slope_decade, C.d + 1)} × ${C.r.span_years.toFixed(1)} ÷ 10 = <strong class="num">${fmt(C.r.total_change, C.d)}${C.u}</strong> over the record${C.r.pct_decade !== null && C.r.pct_decade !== undefined ? `; that rate is ${fmt(C.r.pct_decade, 1)}% of the average per decade` : ''}.` : null,
+    }),
+  ];
+  return {
+    q: 'How fast is it changing?',
+    lead: 'The app measures the speed in two different ways. One is precise but can be pulled by a few freak months; the other is harder to fool. A trend is only called clear when both point the same way.',
+    body: `${sketchTrend()}${abSeg(['The straight line', 'The middle slope', 'The headline numbers'])}${cards[sub]}`,
+  };
+}
+
+function abStep4() {
+  const C = abCase(), sub = AB.sub[3];
+  const ci = C && C.r.ci_decade;
+  const cards = [
+    fxCard({
+      f: `${sym('t')} = ${sym('β')} ⁄ se(${sym('β')})&emsp;·&emsp;95% range = ( ${sym('β')} ± 1.96 · se(${sym('β')}) ) × 10`,
+      where: [
+        [sym('β'), 'the slope of the straight line (step 3), per year'],
+        [`se(${sym('β')})`, 'the <strong>standard error</strong>: how much the slope could wobble just because the months are noisy'],
+        [sym('t'), 'how many wobbles the slope stands away from zero. Far from zero = hard to explain by luck'],
+        ['1.96', 'the bell-curve number that fences in 95% of what luck produces'],
+        ['× 10', 'per year → per decade'],
+      ],
+      plain: 'If a slope is many times bigger than its own wobble, luck is a poor explanation. The 95% range says where the true rate probably lies; if zero is inside it, "no change at all" is still a reasonable answer.',
+      yours: C ? `${pEq(C.r.p_ttest)}; the 95% range runs from ${fmt(ci[0], C.d)} to ${fmt(ci[1], C.d)}${C.u} per decade and ${ci[0] <= 0 && ci[1] >= 0 ? 'includes zero' : 'stays clear of zero'}.` : null,
+    }),
+    fxCard({
+      f: `${sym('S')} = Σ<sub>i&lt;j</sub> sgn( ${sym('a', 'j')} − ${sym('a', 'i')} )&emsp;·&emsp;${sym('Z')} = ( ${sym('S')} − sgn ${sym('S')} ) ⁄ √Var*(${sym('S')})`,
+      where: [
+        [`${sym('a', 'i')}, ${sym('a', 'j')}`, 'the anomalies of an earlier month <i>i</i> and a later month <i>j</i>'],
+        ['sgn( … )', 'just the sign: +1 if the later month is higher, −1 if it is lower, 0 if they tie'],
+        ['Σ<sub>i&lt;j</sub>', 'add that up over every pair of months'],
+        [sym('S'), 'the final score: wins minus losses. Near zero = no direction; large = the later months keep winning'],
+        [`Var*(${sym('S')})`, `how widely <i>S</i> would scatter by pure luck: ${sym('n')}(${sym('n')}−1)(2${sym('n')}+5) ⁄ 18, multiplied by ${sym('n')} ⁄ ${sym('n')}* (see "month memory")`],
+        [`${sym('n')}, ${sym('n')}*`, 'the number of months, and the smaller number of months that are truly independent'],
+        [sym('Z'), 'the score measured in units of luck. Like <i>t</i>, far from zero means hard to blame on chance'],
+      ],
+      plain: 'Judge a race by finishing order only. For every pair of months, ask: did the later one come out higher? If "yes" wins far more often than a coin toss would, something is rising. No ruler and no bell curve are assumed, so odd-shaped data cannot trick it.',
+      yours: C ? `${pEq(C.r.p_mk)}${C.r.mk_fallback ? ' (the back-up version of the test was used, see "month memory")' : ''}.` : null,
+    }),
+    `<div class="fx"><p class="t-body"><strong>Months have a memory.</strong> A warm month tends to follow a warm month, because oceans and soils change slowly.
+      So the months are not all independent pieces of evidence; they repeat each other a little. A test that ignores this becomes overconfident.</p>
+      <ul class="ab-list">
+        <li><strong>In the line test</strong>, the wobble se(<i>β</i>) is computed the <em>Newey–West</em> way, which counts how much each month resembles its neighbours up to 12 months back and widens the wobble to match.</li>
+        <li><strong>In the ranking test</strong>, the <em>Hamed–Rao</em> factor <i>n</i> ⁄ <i>n</i>* replaces the number of months by the smaller number that are effectively independent.</li>
+        <li><strong>Back-up</strong>: on a few stubborn series that factor cannot be computed. The app then removes each month's echo of the month before ("pre-whitening") and tests again, and it tells you it did so.</li>
+      </ul></div>`,
+  ];
+  return {
+    q: 'Could it just be luck?',
+    lead: `Weather bounces around, so a rise could be a lucky streak, like five heads in a row. Each test answers one question:
+      <strong>if nothing were really changing, how often would chance alone draw a trend this strong?</strong> That chance is called
+      <strong><i>p</i></strong>. A small <i>p</i> (under 0.05, or 5%) means luck is a poor excuse.`,
+    body: `${sketchRange()}${abSeg(['Test 1 · the line', 'Test 2 · the ranking', 'Month memory'])}${cards[sub]}`,
+  };
+}
+
+function abStep5() {
+  const C = abCase(), sub = AB.sub[4];
+  const tier = C && C.r.tier, mine = '<span class="ab-you">your case</span>';
+  const yts = C && C.r.years_to_significance;
+  const panels = [
+    `<div class="fx"><p class="t-body">The two tests fail in different ways. The line test can be fooled by a few extreme months; the ranking test
+      ignores how big a change is and only looks at order. For a false alarm, <strong>both</strong> would have to be fooled at once,
+      and the two speeds from step 3 would also have to agree. That is a much harder accident than fooling one test.</p></div>`,
+    fxCard({
+      f: `months needed ≈ ${sym('n')} · ( 1.96 ⁄ |${sym('t')}| )<sup>2/3</sup>`,
+      where: [
+        [sym('n'), 'the number of months in the record today'],
+        [`|${sym('t')}|`, 'the size of <i>t</i> from the line test (step 4), ignoring its sign'],
+        ['1.96', 'the value <i>t</i> must reach to pass the 5% test'],
+        ['<sup>2/3</sup>', 'if the trend and the noise stay the same, <i>t</i> grows like <i>n</i><sup>3/2</sup> as the record gets longer; the power 2/3 undoes that'],
+        ['months needed', 'take away <i>n</i> and divide by 12 to get "more years of data"'],
+      ],
+      plain: 'A weak trend is not a "no". It often just needs more time to stand out from the noise. This estimates how much more, assuming things keep going as they are.',
+      yours: !C ? null : tier === 'significant' ? 'Already clear: no more data needed.'
+        : yts === null || yts === undefined ? 'The line is completely flat, so no amount of extra data would help.'
+        : yts > 50 ? 'More than 50 years at this rate, so the app does not show an estimate.' : `About ${Math.round(yts)} more years of data at this rate.`,
+    }),
+    `<div class="fx"><p class="t-body">A straight line can mislead. A record that sits flat for 40 years and then jumps gives the same
+      "rate per decade" as one that climbs steadily, yet the stories are very different.</p>
+      <p class="t-body">So the app repeats the whole analysis on the record <strong>up to the end of the last full decade</strong>. If the full record
+      shows a trend but that earlier part shows none, the dashboard adds: "Most of this change came recently."</p>
+      ${C ? `<p class="fx-y">${ic('pin', 's')}<span><strong>Your case.</strong> ${C.R.recent ? esc(C.R.recent.text) : 'No such warning here: the trend does not rest on the latest years alone, or there is no clear trend to check.'}</span></p>` : ''}</div>`,
+  ];
+  return {
+    q: 'What does the app finally say?',
+    lead: 'One rule, the same for every place and every variable. It uses the two <i>p</i> values from step 4 and the two speeds from step 3.',
+    body: `<ol class="ab-ladder">
+        <li${tier === 'significant' ? ' class="on"' : ''}><span class="status up">${ic('up')}Clearly rising or falling</span>
+          <span>Both tests give <i>p</i> &lt; 0.05 <strong>and</strong> both speeds point the same way. ${tier === 'significant' ? mine : ''}</span></li>
+        <li${tier === 'suggestive' ? ' class="on"' : ''}><span class="status up maybe">${ic('up')}Possibly rising or falling</span>
+          <span>Not the above, but at least one test gives <i>p</i> &lt; 0.10. A hint, not a proof. ${tier === 'suggestive' ? mine : ''}</span></li>
+        <li${tier === 'none' ? ' class="on"' : ''}><span class="status flat">${ic('flat')}No clear change yet</span>
+          <span>Neither test gets below 0.10. The ups and downs could be natural. ${tier === 'none' ? mine : ''}</span></li>
+      </ol>
+      ${abSeg(['Why two tests?', 'How long until we are sure?', 'Is the change recent?'])}${panels[sub]}`,
+  };
+}
+
+function abStep6() {
+  const C = abCase(), sub = AB.sub[5];
+  const z = C && C.R.zones;
+  const tiles = [['layers', 'Zone map', 'Which cells change?'], ['hill', 'Groups', 'Which cells change alike?'],
+    ['check', 'Second opinion', 'Does another dataset agree?'], ['compare', 'Two places', 'Which changes faster?']];
+  const panels = [
+    `<p class="t-body">Buy 20 lottery tickets and one may win by luck. Test 20 cells at the 5% level and about one will "pass" by luck too.
+      So on the map the bar rises with the number of cells. Each cell enters with the <em>larger</em> of its two <i>p</i> values:</p>
+     ${fxCard({
+      f: `keep the cells with ${sym('p', '(k)')} ≤ ( ${sym('k')} ⁄ ${sym('m')} ) · 0.10`,
+      where: [
+        [sym('m'), 'the number of cells tested'],
+        [sym('p', '(k)'), 'the <i>k</i>-th smallest <i>p</i> value when all cells are sorted from strongest evidence to weakest'],
+        [sym('k'), 'its position in that sorted list: 1 for the best cell, 2 for the next…'],
+        ['0.10', 'the share of false alarms we accept among the cells that get a dot: at most 10%'],
+      ],
+      plain: 'The best cell must beat a very strict bar, the next one a slightly easier bar, and so on. A cell that passes gets a dot on the map (and its two speeds must agree in direction). This is the Benjamini–Hochberg rule; the "q-value" in the tooltips is each cell\'s score on it.',
+      yours: !C ? null : z && z.length ? `${z.filter((x) => x.significant).length} of ${plural(z.length, 'cell')} keep a clear trend after this correction.` : 'This case has too few land cells for a zone map.',
+    })}`,
+    `<div class="fx"><p class="t-body">Every cell gets a <strong>fingerprint</strong>: its rate per decade for three variables (temperature, rain, and a third
+      one chosen for the local climate). Each variable is rescaled so that none dominates just because its numbers are bigger.</p>
+      <p class="t-body">Then the two most similar fingerprints are joined, then the next two, and so on, like sorting socks into piles
+      (this is called Ward linkage). Cells in one pile share a colour.</p>
+      <p class="t-cap">A group is a description, not a test. It says "these cells change alike", never "this change is real"; that judgement stays with the zone map.</p></div>`,
+    `<div class="fx"><p class="t-body">The second NASA record (step 1) goes through exactly the same tests. Then:</p>
+      <ol class="ab-ladder small">
+        <li><span class="status"><strong>They agree</strong></span><span>Both lean the same way, and both are at least "possibly".</span></li>
+        <li><span class="status"><strong>They disagree</strong></span><span>They lean opposite ways, and at least one of them is "clearly".</span></li>
+        <li><span class="status"><strong>One source only</strong></span><span>Anything weaker. The app then makes no claim about agreement.</span></li>
+      </ol></div>`,
+    `<p class="t-body">Each place is tested on its own record, against its own usual climate. One is called <strong>faster</strong> only when the two
+      95% ranges (step 4) do not overlap; a smaller gap could be luck, and the app says "similar". When two <em>variables</em> are compared, it reports how closely they move together:</p>
+     ${fxCard({
+      f: `${sym('r')} = Σ<sub>t</sub> ( ${sym('a', 't')} − <span class="ol">${sym('a')}</span> )( ${sym('b', 't')} − <span class="ol">${sym('b')}</span> ) ⁄ √[ Σ<sub>t</sub> ( ${sym('a', 't')} − <span class="ol">${sym('a')}</span> )² · Σ<sub>t</sub> ( ${sym('b', 't')} − <span class="ol">${sym('b')}</span> )² ]`,
+      where: [
+        [`${sym('a', 't')}, ${sym('b', 't')}`, 'the anomalies of the two variables in the same month <i>t</i>'],
+        [`<span class="ol">${sym('a')}</span>, <span class="ol">${sym('b')}</span>`, 'the average anomaly of each variable over the months they share'],
+        ['Σ<sub>t</sub>', 'add up over every month both variables have'],
+        [sym('r'), 'the correlation, from −1 to +1: +1 = they always rise together, −1 = one rises when the other falls, 0 = no link'],
+      ],
+      plain: 'When one variable is above its usual value, is the other one too? Moving together is <em>consistent with</em> a connection, but it is never proof that one causes the other.',
+    })}`,
+  ];
+  return {
+    q: 'And the maps and comparisons?',
+    lead: 'The same tests, put to work in four more ways. Pick one.',
+    body: `<div class="ab-tiles" role="group" aria-label="Topics">${tiles.map(([icon, name, teaser], i) =>
+      `<button type="button" data-sub="${i}" aria-pressed="${sub === i}">${ic(icon)}<strong>${name}</strong><small>${teaser}</small></button>`).join('')}</div>
+      ${panels[sub]}
+      <p class="t-cap">Method after Acker et al. (2009); ranking-test correction from Hamed &amp; Rao (1998); the map rule from Wilks (2016).
+        Climate is normally judged over 30 years or more (WMO).
+        <a class="link" href="/docs/validation.md" target="_blank" rel="noopener">How we checked the method</a></p>`,
+  };
+}
 
 function aboutHtml() {
-  const meta = S.meta || { years: [1981, 2025], max_points: 30, min_years: 10, variables: {} };
-  const [y0, y1] = meta.years;
-  const secs = [['ab-1', 'The data'], ['ab-2', 'One series'], ['ab-3', 'The trend'], ['ab-4', 'Chance?'], ['ab-5', 'The verdict'], ['ab-6', 'Maps & more']];
-  const chips = secs.map(([id, label]) => `<button type="button" data-goto="${id}">${label}</button>`).join('');
-  const varRows = Object.values(meta.variables).map((v) =>
-    `<tr><td>${esc(v.name)}</td><td>${esc(v.definition || '')}</td><td>${esc(v.units || '')}</td></tr>`).join('');
-
+  const meta = S.meta || { years: [1981, 2025], max_points: 30, variables: {} };
+  const i = AB.step, last = AB_STEPS.length - 1;
+  const step = [abStep1, abStep2, abStep3, abStep4, abStep5, abStep6][i](meta);
+  const tabs = AB_STEPS.map((label, k) =>
+    `<button type="button" data-step="${k}" class="${k === i ? 'on' : k < i ? 'done' : ''}" ${k === i ? 'aria-current="step"' : ''}><b>${k + 1}</b><span>${label}</span></button>`).join('');
+  const C = abCase();
   return `<div class="about-card" role="document">
   <header class="ab-head">
     <div class="row">
       <div class="stack tight" style="gap:3px">
         <h2 class="ab-title">The data &amp; the math</h2>
-        <p class="t-cap">Every verdict is built in six steps. Here is each one, with its formula beneath it.</p>
+        <p class="t-cap">How a verdict is made, in six small steps.${C ? ` Showing the numbers of your case: ${esc(C.v.name.toLowerCase())}, ${C.R.years[0]}–${C.R.years[1]}.` : ''}</p>
       </div>
       <button type="button" class="ab-close" data-ab="close" aria-label="Close">${ic('close', 's')}</button>
     </div>
-    <nav class="ab-chips" aria-label="Sections">${chips}</nav>
+    <nav class="ab-steps" aria-label="Steps">${tabs}</nav>
   </header>
   <div class="ab-body">
-
-    <section class="ab-sec" id="ab-1">
-      <h3><span class="no">1</span>Where the numbers come from</h3>
-      <p class="t-body">Every series starts at <strong>NASA POWER</strong>, NASA's open data service for the
-        <strong>MERRA-2 reanalysis</strong>: a physics model of the whole atmosphere, re-run over the past while being
-        continually corrected with millions of real observations from satellites, weather stations and balloons.
-        That gives a complete value for every month from <strong>${y0} to ${y1}</strong>, anywhere on Earth —
-        no gaps, but model output, not a single thermometer.</p>
-      <p class="t-body">The data comes on a grid of cells <strong>0.5° of latitude × 0.625° of longitude</strong>
-        (roughly 55 km tall). The app snaps your selection to these cells — up to ${meta.max_points || 30} of them —
-        and drops the ones that are sea: NASA POWER reports permanently saturated topsoil (wetness 1.0, or none at all)
-        over open water, which is how the app tells water from land. Missing months stay missing; nothing is filled in.</p>
-      <table class="ab-table"><tbody>${varRows}</tbody></table>
-      <p class="t-cap">For the headline variables the app also fetches a <strong>second NASA record</strong> through NASA Giovanni
-        and runs the same tests on it: AIRS (an infrared sounder on the Aqua satellite, from 2002) for temperature, and
-        GPM IMERG (many satellites combined with rain gauges) for rain. Neither is fully independent of MERRA-2 — the model
-        ingests AIRS readings too, and its rain is gauge-corrected — but they are built by different teams with different methods.</p>
-    </section>
-
-    <section class="ab-sec" id="ab-2">
-      <h3><span class="no">2</span>From many cells to one series</h3>
-      ${fx(`<span class="ol"><i>x</i></span><sub>t</sub> = Σ<sub>i</sub> <i>w</i><sub>i</sub> <i>x</i><sub>i,t</sub> ⁄ Σ<sub>i</sub> <i>w</i><sub>i</sub>&nbsp;,&emsp;<i>w</i><sub>i</sub> = cos <i>φ</i><sub>i</sub>`,
-    `Month by month, the land cells are averaged with weight w = cos(latitude φ), because cells cover less ground towards
-     the poles. A cell with a missing month simply drops out of that month.`)}
-      ${fx(`<i>a</i><sub>t</sub> = <i>x</i><sub>t</sub> − <i>m</i><sub>month(t)</sub>`,
-    `The anomaly: each month minus the average of its calendar month (m) over the whole record. This removes the seasons,
-     so the summer–winter swing cannot pose as a trend. Everything below works on these anomalies a.`)}
-    </section>
-
-    <section class="ab-sec" id="ab-3">
-      <h3><span class="no">3</span>Measuring the trend — twice</h3>
-      <p class="t-body">Two rates are computed by different logics; a trend is only called clear when they agree in direction.
-        (Below 60 months of data the app refuses to compute either.)</p>
-      ${fx(`<i>a</i><sub>t</sub> = <i>α</i> + <i>β</i>·<i>t</i> + <i>ε</i><sub>t</sub>&emsp;→&emsp;rate per decade = 10 <i>β</i>`,
-    `A straight line through the anomalies against time t in years, placed where the squared errors are smallest
-     (ordinary least squares). Its slope β is per year; ×10 gives the per-decade rate on the dashboard.`)}
-      ${fx(`Sen's slope = median<sub>i&lt;j</sub> ( <i>a</i><sub>j</sub> − <i>a</i><sub>i</sub> ) ⁄ ( <i>t</i><sub>j</sub> − <i>t</i><sub>i</sub> )`,
-    `The second rate: the middle value of the slope between every pair of months. A few freak months barely move a median,
-     so this one is hard to fool.`)}
-      ${fx(`total change = rate per decade × years ⁄ 10&emsp;·&emsp;share of average = rate ⁄ <span class="ol"><i>x</i></span> × 100`,
-    `The "about X ${esc('°C')} over N years" line is the change along the trend line, not last year minus first year. The share
-     of the long-term average is shown only for quantities with a true zero (rain, snow, soil wetness), so wet and dry places compare fairly.`)}
-    </section>
-
-    <section class="ab-sec" id="ab-4">
-      <h3><span class="no">4</span>Could it be chance?</h3>
-      <p class="t-body">Climate months remember each other — a warm month tends to follow a warm month — which makes naive
-        tests overconfident. Both tests below are corrected for that memory.</p>
-      ${fx(`<i>t</i> = <i>β</i> ⁄ se<sub>NW</sub>(<i>β</i>)&emsp;·&emsp;95% range = ( <i>β</i> ± 1.96 se ) × 10`,
-    `The fit test. The standard error comes from Newey–West, which counts how much each month overlaps its neighbours up to
-     12 months back. Its p-value is the chance of a slope this steep appearing with no real trend; if the 95% range includes
-     zero, there may be no trend at all.`)}
-      ${fx(`<i>S</i> = Σ<sub>i&lt;j</sub> sgn( <i>a</i><sub>j</sub> − <i>a</i><sub>i</sub> )&emsp;·&emsp;Var*(<i>S</i>) = Var(<i>S</i>) · <i>n</i> ⁄ <i>n</i>*`,
-    `The rank test (Mann–Kendall): across every pair of months, count whether the later one is higher. No straight line and
-     no bell curve are assumed. The Hamed–Rao factor n/n* shrinks the evidence to the number of effectively independent
-     months; on the rare series where that correction fails, the app says so and uses the pre-whitened test
-     (each month's echo of the previous one is removed first).`)}
-    </section>
-
-    <section class="ab-sec" id="ab-5">
-      <h3><span class="no">5</span>The verdict rule</h3>
-      <div class="ab-rule">
-        <span><strong>Clearly changing</strong> — both tests give p &lt; 0.05 <em>and</em> the two rates agree in direction.</span>
-        <span><strong>Possibly changing</strong> — either test gives p &lt; 0.10.</span>
-        <span><strong>No clear change</strong> — anything less.</span>
-      </div>
-      <p class="t-body">Two tests built on different principles must both be fooled before the app cries trend — that is the
-        point of running them side by side.</p>
-      ${fx(`months needed ≈ <i>n</i> · ( 1.96 ⁄ |<i>t</i>| )<sup>2/3</sup>`,
-    `Behind "about X more years of data": if the trend and the noise stay as they are, the t statistic grows like n<sup>3/2</sup>,
-     so solving for t = 1.96 says how long the record must get before the 5% test would pass.`)}
-      <p class="t-body">One honesty check runs on every verdict: the same analysis is repeated on the record up to the end of
-        the last full decade. If the whole record shows a trend but that shorter part does not, the dashboard says most of the
-        change came recently — instead of selling it as a steady rate.</p>
-    </section>
-
-    <section class="ab-sec" id="ab-6">
-      <h3><span class="no">6</span>Maps, groups and comparisons</h3>
-      <p class="t-body"><strong>Zone map.</strong> Testing many cells multiplies false alarms: at 5%, about one flat cell in
-        twenty would "pass" by luck. So each cell's <em>larger</em> p-value (of its two tests) goes into the
-        Benjamini–Hochberg step:</p>
-      ${fx(`keep cells with <i>p</i><sub>(k)</sub> ≤ ( <i>k</i> ⁄ <i>m</i> ) · 0.10`,
-    `p-values sorted smallest first, m = number of cells. Reported as q-values; a dot on the map means q < 0.10 and that
-     cell's own two rates agree in direction. This keeps expected false flags under 10% of all flagged cells.`)}
-      <p class="t-body"><strong>Groups.</strong> Each cell gets a trend fingerprint — its per-decade rates on three variables,
-        each scaled to unit spread — and similar fingerprints are joined step by step (Ward linkage). Descriptive only:
-        a shared colour means "these cells change alike"; significance stays with each cell in the zone map.</p>
-      <p class="t-body"><strong>Second dataset.</strong> The records <em>agree</em> when both lean the same way (at least
-        suggestive); <em>disagree</em> when they lean opposite ways and at least one is significant; anything weaker and the
-        app claims one source only.</p>
-      <p class="t-body"><strong>Two places.</strong> Each place is tested on its own record, and one is called faster only
-        when the two 95% ranges do not overlap — any smaller gap could be chance. The "moves together" r between two
-        variables is the plain correlation of their monthly anomalies over shared months: consistent with a connection,
-        never proof of cause.</p>
-      <p class="t-cap">Method after Acker et al. (2009); Mann–Kendall correction from Hamed &amp; Rao (1998); grid FDR from
-        Wilks (2016). Climate is normally judged over 30 years or more (WMO). Every formula above is exactly what the code
-        computes — the app never shows a number it did not calculate.
-        <a class="link" href="/docs/validation.md" target="_blank" rel="noopener">Validation notes</a></p>
-    </section>
-
-  </div></div>`;
+    <div class="ab-step">
+      <p class="ab-kick">Step ${i + 1} of ${AB_STEPS.length}</p>
+      <h3 class="ab-q">${step.q}</h3>
+      <p class="ab-lead">${step.lead}</p>
+      ${step.body}
+    </div>
+  </div>
+  <footer class="ab-foot">
+    <button type="button" class="btn quiet" data-ab="prev" ${i === 0 ? 'disabled' : ''}>${ic('back', 's')}Back</button>
+    <span class="ab-dots" aria-hidden="true">${AB_STEPS.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</span>
+    ${i === last ? '<button type="button" class="btn" data-ab="close">Done</button>'
+      : `<button type="button" class="btn" data-ab="next">Next: ${AB_STEPS[i + 1]}${ic('next', 's')}</button>`}
+  </footer></div>`;
 }
 
-function openAbout() {
+function renderAbout(focus) {
   const el = $('about');
+  const keep = el.querySelector('.ab-body');
+  const top = focus === 'sub' && keep ? keep.scrollTop : 0;      // switching a tab inside a step keeps your place
   el.innerHTML = aboutHtml();
-  el.hidden = false;
-  el.querySelector('.ab-close').focus();
+  el.querySelector('.ab-body').scrollTop = top;
+  const target = focus === 'sub' ? el.querySelector('[data-sub][aria-pressed="true"]')
+    : focus === 'step' ? el.querySelector('[data-ab="next"], .ab-foot [data-ab="close"]') : el.querySelector('.ab-close');
+  if (target) target.focus({ preventScroll: true });
 }
 
+function openAbout() { $('about').hidden = false; renderAbout(); }
 function closeAbout() { $('about').hidden = true; }
+function aboutGo(step) {
+  AB.step = Math.max(0, Math.min(AB_STEPS.length - 1, step));
+  renderAbout('step');
+}
 
 $('about').addEventListener('click', (e) => {
-  if (e.target === $('about') || e.target.closest('[data-ab="close"]')) return closeAbout();
-  const chip = e.target.closest('[data-goto]');
-  if (chip) { const sec = $(chip.dataset.goto); if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  if (e.target === $('about')) return closeAbout();
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  if (b.dataset.ab === 'close') closeAbout();
+  else if (b.dataset.ab === 'prev') aboutGo(AB.step - 1);
+  else if (b.dataset.ab === 'next') aboutGo(AB.step + 1);
+  else if (b.dataset.step !== undefined) aboutGo(+b.dataset.step);
+  else if (b.dataset.sub !== undefined) { AB.sub[AB.step] = +b.dataset.sub; renderAbout('sub'); }
 });
 
 // ---------------------------------------------------------------- events (one delegated listener per kind)
@@ -1549,7 +1834,10 @@ const ACTIONS = {
   csv: () => downloadSeries(), cells: () => downloadCells(), json: () => downloadCase(),
   print: () => window.print(),
   share: () => share(),
-  about: () => openAbout(),
+  about: (b) => {                // a link may open the window on a given step (data-step) and topic (data-sub)
+    if (b.dataset.step !== undefined) { AB.step = +b.dataset.step; AB.sub[AB.step] = +(b.dataset.sub || 0); }
+    openAbout();
+  },
 };
 $('panel').addEventListener('click', (e) => {
   if (e.target.closest('.info')) return;
@@ -1590,6 +1878,7 @@ document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); }
   if (e.key === 'Escape' && !$('about').hidden) { closeAbout(); return; }
+  if (!$('about').hidden && !typing && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) { aboutGo(AB.step + (e.key === 'ArrowRight' ? 1 : -1)); return; }
   if (e.key === 'Escape' && S.mode === 'draw') { window.cancelLasso(); setMode('pan'); }
 });
 
