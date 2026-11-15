@@ -294,11 +294,6 @@ This is hackathon software. It has not been peer-reviewed, and nothing in it is 
 - **The cross-check is not a referee.** AIRS and GPM IMERG are the independent instruments we trust most here, but no dataset is fully independent of the global observing system.
 - **The language model writes words, not numbers.** Even with the validator, read the figures from the panel, not from the paragraph.
 
-## Team
-
-R4Y3NN-k (data) · yahya0X (dashboard) · stats · content.
-Module ownership is in [`PLAN.md`](PLAN.md).
-
 ---
 
 <sub>AI-assisted: portions of this repository were drafted with Claude (Anthropic) and reviewed by the team. Plain-language summaries in the application are produced by Google Gemini and labelled accordingly. Map tiles © OpenStreetMap contributors. No NASA logos are used.</sub>
