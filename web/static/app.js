@@ -270,9 +270,9 @@ function selectLoop(loop) {
 }
 
 // A box of about 2° x 2° around a place from the search box.
-function selectAround(place) {
+function selectAround(place, r = 1) {
   pushHistory();
-  const b = [[place.lat - 1, place.lon - 1], [place.lat - 1, place.lon + 1], [place.lat + 1, place.lon + 1], [place.lat + 1, place.lon - 1]];
+  const b = [[place.lat - r, place.lon - r], [place.lat - r, place.lon + r], [place.lat + r, place.lon + r], [place.lat + r, place.lon - r]];
   setLasso(b);
   selectLoop(b);
   if (reduceMotion || document.hidden) map.fitBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), animate: false }); else map.flyToBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), duration: 0.8 });
@@ -483,7 +483,8 @@ function headHtml() {
     ? `<button type="button" class="link" data-act="back">${ic('back', 's')}Change area or question</button>`
     : '<span class="where">NASA data, 1981 to 2025</span>';
   const seg = ['simple', 'expert'].map((m) => `<button type="button" data-act="ui" data-ui="${m}" aria-pressed="${S.ui === m}">${m === 'simple' ? 'Simple' : 'Expert'}</button>`).join('');
-  return `${left}<div class="seg" role="group" aria-label="Level of detail">${seg}</div>`;
+  const mark = '<svg class="mark" role="img" aria-label="Trend Detective"><use href="#logo"/></svg>';
+  return `<div class="row" style="gap:10px;align-items:center;min-width:0">${mark}${left}</div><div class="seg" role="group" aria-label="Level of detail">${seg}</div>`;
 }
 
 function renderPanel() {
@@ -1152,7 +1153,6 @@ function showWelcome() {
     <div class="welcome-logo" aria-hidden="true">
       <svg><use href="#logo"/></svg>
     </div>
-    <h2 class="t-title" style="margin-top:4px">Trend Detective</h2>
     <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
     <div class="row stack tight" style="gap:8px;margin-top:4px">
       <button type="button" class="btn wide" data-welcome="demo">Watch the demo where I am</button>
@@ -1285,7 +1285,7 @@ async function runDemo() {
     const c0 = map.getCenter(), [lat, lon] = here || [c0.lat, c0.lng];
     demoOverlay(0, 1, here ? 'Selecting the area around you…' : 'Selecting the area in the middle of the map…');
     S.place = { name: 'this area', lat, lon };
-    selectAround(S.place);
+    selectAround(S.place, 0.6);
     await demoPoll(() => S.climate !== null, 300, 15000);
     const qLabel = (S.questions.find((q) => q.id === S.question) || {}).label || 'climate trend here';
     demoOverlay(0, 1, qLabel);
