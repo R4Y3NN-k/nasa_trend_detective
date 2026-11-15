@@ -51,7 +51,8 @@ from td.fetch import FetchError, _snap, area_mean, fetch_point, is_land  # noqa:
 
 STATIC = Path(__file__).resolve().parent / "static"
 PLOTLY_JS = Path(plotly.__file__).resolve().parent / "package_data" / "plotly.min.js"
-PORT = int(os.environ.get("TD_PORT", "8600"))
+PORT = int(os.environ.get("PORT") or os.environ.get("TD_PORT") or "8600")
+HOST = os.environ.get("TD_HOST", "127.0.0.1")
 MAX_POINTS = getattr(config, "MAX_POINTS", 30)
 MIN_YEARS = 10
 WORKERS = 4
@@ -897,7 +898,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Trend Detective web UI on http://localhost:{PORT}  (Ctrl+C to stop)")
     try:
         httpd.serve_forever()
