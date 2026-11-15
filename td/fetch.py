@@ -33,7 +33,8 @@ POWER_URL = "https://power.larc.nasa.gov/api/temporal/monthly/point"
 CORE_PARAMS = ("T2M", "PRECTOTCORR", "GWETTOP")   # what fetch_box() returns (Streamlit app)
 # Extra variables let the map UI ask the questions that fit each climate (snow and frost in Canada, extreme heat
 # in Arabia). Same request, same cache entry per point: POWER returns them all in one call.
-POWER_PARAMS = CORE_PARAMS + ("T2M_MAX", "T2M_MIN", "FROST_DAYS", "PRECSNOLAND", "SNODP", "RH2M")
+POWER_PARAMS = CORE_PARAMS + ("T2M_MAX", "T2M_MIN", "FROST_DAYS", "PRECSNOLAND", "SNODP", "RH2M",
+                              "EVLAND", "GWETROOT")
 FILL_VALUE = -999.0
 TIMEOUT_S = 90
 RETRIES = 3

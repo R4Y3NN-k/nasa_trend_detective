@@ -25,6 +25,8 @@ _FALLBACK_VARIABLES = {
     "PRECSNOLAND": {"name": "Snowfall", "units": "mm/day", "relative": True, "decimals": 3},
     "SNODP": {"name": "Snow depth", "units": "cm", "relative": True, "decimals": 2},
     "RH2M": {"name": "Relative humidity", "units": "%", "relative": False, "decimals": 2},
+    "EVLAND": {"name": "Evaporation from the land", "units": "mm/day", "relative": True, "decimals": 3},
+    "GWETROOT": {"name": "Root-zone soil wetness", "units": "(0 to 1)", "relative": True, "decimals": 3},
 }
 
 

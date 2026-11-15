@@ -46,3 +46,12 @@ def test_climate_endpoint_from_means_is_instant_and_validated():
     assert out["climate"]["type"] == "arid"
     with pytest.raises(FetchError):
         server.climate_from_means({"means": {"PRECTOTCORR": 1.0}})
+
+
+def test_evaporation_and_root_zone_questions_only_where_they_happen():
+    from td.questions import relevant_questions
+    tunis = relevant_questions({**TUNIS, "EVLAND": 0.9, "GWETROOT": 0.45})
+    assert "evaporation" in tunis and "rootzone" in tunis
+    assert tunis.index("drying") < tunis.index("rootzone")          # topsoil first, deeper soil after
+    riyadh = relevant_questions({**RIYADH, "EVLAND": 0.03, "GWETROOT": 0.1})
+    assert "evaporation" not in riyadh and "rootzone" in riyadh     # almost nothing evaporates in a desert

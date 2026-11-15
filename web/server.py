@@ -85,6 +85,14 @@ FALLBACK_VARIABLES = {
     "RH2M": {"name": "Relative humidity", "units": "%", "decimals": 2,
              "definition": "Relative humidity of the air 2 m above the ground.",
              "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "EVLAND": {"name": "Evaporation from the land", "units": "mm/day", "decimals": 3,
+               "definition": "Water leaving the land as vapour each day, from soil, plants and wet surfaces, "
+                             "averaged over the month, in millimetres of water.",
+               "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
+    "GWETROOT": {"name": "Root-zone soil wetness", "units": "0 to 1", "decimals": 3,
+                 "definition": "How wet the soil is where plant roots grow (the top metre), from 0 (dry) to "
+                               "1 (saturated). It changes more slowly than the topsoil.",
+                 "source": "NASA POWER (MERRA-2 reanalysis), monthly"},
 }
 # Region-aware question catalog (td/questions.py), in the {linked: {default: ...}} shape config.QUESTIONS uses.
 FALLBACK_QUESTIONS = {

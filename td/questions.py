@@ -31,15 +31,19 @@ CATALOG = {
                "why": "Rising heat is a common reason soils dry."},
     "humid": {"label": "Is the air getting more humid?", "primary": "RH2M", "linked": "T2M",
               "why": "Air temperature changes how much moisture the air holds."},
+    "evaporation": {"label": "Is more water evaporating from the land?", "primary": "EVLAND", "linked": "PRECTOTCORR",
+                    "why": "Land can only evaporate the water it receives, so evaporation follows rain as well as heat."},
+    "rootzone": {"label": "Are the deeper soils drying out?", "primary": "GWETROOT", "linked": "PRECTOTCORR",
+                 "why": "Rain refills the root zone over months, so it changes more slowly than the topsoil."},
 }
 
 # What people in each climate most need to know, most important first.
 RELEVANCE = {
-    "cold": ["snowcover", "snow", "milder", "frost", "hotter", "rain"],
-    "arid": ["heat", "hotter", "drying", "rain", "humid"],
-    "semi_arid": ["hotter", "heat", "drying", "rain", "humid"],
-    "tropical": ["rain", "heat", "humid", "drying", "hotter"],
-    "temperate": ["hotter", "rain", "heat", "frost", "snow", "drying", "milder"],
+    "cold": ["snowcover", "snow", "milder", "frost", "hotter", "rain", "evaporation"],
+    "arid": ["heat", "hotter", "drying", "rootzone", "rain", "humid", "evaporation"],
+    "semi_arid": ["hotter", "heat", "drying", "rootzone", "evaporation", "rain", "humid"],
+    "tropical": ["rain", "heat", "humid", "evaporation", "drying", "rootzone", "hotter"],
+    "temperate": ["hotter", "rain", "heat", "frost", "snow", "drying", "rootzone", "evaporation", "milder"],
 }
 DEFAULT = ["hotter", "rain", "drying"]   # before the area's data has loaded
 
@@ -52,7 +56,7 @@ LABELS = {
 }
 
 # A question is only offered where its variable actually happens (no snow questions in a desert).
-MIN_MEAN = {"SNODP": 0.5, "PRECSNOLAND": 0.02, "FROST_DAYS": 1.0}
+MIN_MEAN = {"SNODP": 0.5, "PRECSNOLAND": 0.02, "FROST_DAYS": 1.0, "EVLAND": 0.1}
 
 
 def _get(means, key, default=None):
