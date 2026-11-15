@@ -54,8 +54,8 @@ ul, ol { padding: 0; list-style: none; }
 .topbar { position: absolute; left: 66px; top: 10px; z-index: 1001; display: flex; align-items: flex-start; gap: 8px; right: calc(var(--panel-w) + 32px); pointer-events: none; }
 .topbar > * { pointer-events: auto; }
 .brand { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 16px 0 12px; background: var(--char); color: var(--white); border-radius: var(--r-m); box-shadow: var(--shadow-s); white-space: nowrap; }
-.brand svg { color: var(--white); width: 28px; height: 28px; }
-.brand-logo { flex: none; }
+.brand svg { width: 36px; height: 29px; flex: none; }
+.brand-logo { --lg-arc: #6FCF97; --lg-planet: #8CDCD9; --lg-bg: var(--char); --lg-leaf1: #7BC043; --lg-leaf2: #B5E07A; }
 .brand b { font-size: 16.5px; font-weight: 700; letter-spacing: -.01em; }
 
 .search { position: relative; flex: 1 1 220px; max-width: 320px; min-width: 0; }
@@ -265,6 +265,7 @@ details.menu .items button:hover { background: var(--teal-s); }
 
 /* ------------------------------------------------------------ welcome overlay */
 .welcome-logo { display: flex; justify-content: center; padding: 4px 0 8px; }
+.welcome-logo svg { width: 80px; height: 64px; --lg-arc: #1E9E4A; --lg-planet: #0B6B3A; --lg-bg: var(--white); --lg-leaf1: #3FA34D; --lg-leaf2: #7BC043; }
 .coach .row.stack { flex-direction: column; align-items: stretch; }
 
 /* ------------------------------------------------------------ demo walkthrough bar */

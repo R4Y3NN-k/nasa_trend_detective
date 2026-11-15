@@ -1152,14 +1152,7 @@ function showWelcome() {
   el.hidden = false;
   el.innerHTML = `
     <div class="welcome-logo" aria-hidden="true">
-      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" width="48" height="48">
-        <circle cx="20" cy="22" r="13" stroke="var(--teal)" stroke-width="2.2"/>
-        <ellipse cx="20" cy="22" rx="6" ry="13" stroke="var(--teal)" stroke-width="1.6" stroke-dasharray="3 2"/>
-        <line x1="7" y1="22" x2="33" y2="22" stroke="var(--teal)" stroke-width="1.6"/>
-        <path d="M12 27l4.5-5 4 3 5-7" stroke="var(--teal)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="34" cy="34" r="6" stroke="var(--teal)" stroke-width="2.2"/>
-        <line x1="38.2" y1="38.2" x2="42" y2="42" stroke="var(--teal)" stroke-width="2.6" stroke-linecap="round"/>
-      </svg>
+      <svg><use href="#logo"/></svg>
     </div>
     <h2 class="t-title" style="margin-top:4px">Trend Detective</h2>
     <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
@@ -1233,10 +1226,6 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------- demo walkthrough: auto-playing guided cases
-const DEMO_CASES = [
-  { name: 'Tunis', question: 'hotter', caption: 'Is Tunis getting hotter? 45 years of NASA data…' },
-  { name: 'Manitoba', question: 'milder', caption: 'Are Manitoba\'s coldest nights getting milder?' },
-];
 
 let demoRunning = false, demoAbort = null;
 
@@ -1288,31 +1277,28 @@ async function runDemo() {
   if (demoRunning) return;
   demoRunning = true;
   pref.set('coach', 'done');
-  coach(null);
+  $('coach').hidden = true;
   try {
-    for (let i = 0; i < DEMO_CASES.length; i++) {
-      const c = DEMO_CASES[i];
-      demoOverlay(i, DEMO_CASES.length, c.caption);
-      if (S.screen === 'verdict') newCase();
-      const p = (window.TD_PLACES || []).find((x) => x[0] === c.name);
-      if (!p) continue;
-      goToPlace(p, false);
-      selectAround(S.place);
-      await demoPoll(() => S.climate !== null, 300, 12000);
-      if (S.questions.some((q) => q.id === c.question)) {
-        S.question = c.question; S.variable = null; S.userChose = true;
-      }
-      renderPanel();
-      await demoWait(600);
-      investigate();
-      await demoPoll(() => S.screen === 'verdict' && S.result, 300, 30000);
-      demoOverlay(i, DEMO_CASES.length, c.caption);
-      await demoPoll(() => S.explain && S.explain.status !== 'loading', 400, 20000);
-      renderPanel();
-      await demoWait(9000);
-    }
-    demoOverlay(DEMO_CASES.length, DEMO_CASES.length, 'Demo complete — try your own area!');
-    await demoWait(3000);
+    if (S.screen === 'verdict') newCase();
+    demoOverlay(0, 1, 'Finding your location…');
+    const here = await new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition((p) => resolve([p.coords.latitude, p.coords.longitude]), () => resolve(null), { timeout: 6000, maximumAge: 600000 });
+    });
+    const c0 = map.getCenter(), [lat, lon] = here || [c0.lat, c0.lng];
+    demoOverlay(0, 1, here ? 'Selecting the area around you…' : 'Selecting the area in the middle of the map…');
+    S.place = { name: 'this area', lat, lon };
+    selectAround(S.place);
+    await demoPoll(() => S.climate !== null, 300, 15000);
+    const qLabel = (S.questions.find((q) => q.id === S.question) || {}).label || 'climate trend here';
+    demoOverlay(0, 1, qLabel);
+    await demoWait(600);
+    investigate();
+    await demoPoll(() => S.screen === 'verdict' && S.result, 300, 30000);
+    await demoPoll(() => S.explain && S.explain.status !== 'loading', 400, 20000);
+    renderPanel();
+    demoOverlay(0, 1, `${qLabel} — now try your own area!`);
+    await demoWait(10000);
   } catch (_) { /* stopped */ }
   demoHide();
   demoRunning = false;
