@@ -529,7 +529,6 @@ function renderPick() {
   const n = S.picked.size;
   const [y0, y1] = S.years, [first, last] = S.meta.years;
   if (!n) {
-    const demo = ['Tunis', 'Riyadh', 'Manitoba'].map((name) => `<button type="button" class="link" data-act="demo" data-name="${name}">${name}</button>`).join(' · ');
     $('panel-body').innerHTML = `<div class="screen">
       <div class="stack">
         <h1 class="t-display">Is the climate changing where you live?</h1>
@@ -540,8 +539,7 @@ function renderPick() {
         <li><strong>2.</strong> Draw a loop around it with the pen tool (or hold Shift and drag).</li>
         <li><strong>3.</strong> Choose a question and press Investigate.</li>
       </ol>
-      <p class="t-body">Or start with an example: ${demo}</p>
-      <button type="button" class="btn demo-btn" data-act="rundemo">${ic('spin')} Watch the demo</button>
+      <button type="button" class="btn demo-btn" data-act="rundemo">${ic('spin')} Watch the demo where I am</button>
       ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
     </div>`;
     $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>Investigate ${ic('next')}</button>`;
@@ -1157,7 +1155,7 @@ function showWelcome() {
     <h2 class="t-title" style="margin-top:4px">Trend Detective</h2>
     <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
     <div class="row stack tight" style="gap:8px;margin-top:4px">
-      <button type="button" class="btn wide" data-welcome="demo">Watch the demo</button>
+      <button type="button" class="btn wide" data-welcome="demo">Watch the demo where I am</button>
       <button type="button" class="link" style="text-align:center" data-welcome="skip">Explore yourself</button>
     </div>`;
 }
@@ -1177,7 +1175,6 @@ const ACTIONS = {
   go: () => investigate(),
   q: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; renderPanel(); updateHash(); },
   next: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; investigate(); },
-  demo: (b) => { const p = (window.TD_PLACES || []).find((x) => x[0] === b.dataset.name); if (p) goToPlace(p, true); },
   tab: (b) => { S.tab = b.dataset.tab; if (S.tab === 'groups' && !S.groups) loadGroups(); renderPanel(); },
   view: (b) => { S.view = b.dataset.view; patch('sec-tab', tabHtml()); drawCharts(); },
   gview: (b) => { S.groupView = b.dataset.gview; patch('sec-tab', tabHtml()); drawCharts(); },
