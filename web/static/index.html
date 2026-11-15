@@ -1,0 +1,92 @@
+<!doctype html>
+<!-- SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trend Detective</title>
+<meta name="description" content="Is the climate changing where you live? Check the evidence yourself, from NASA data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<!-- Logo: planet with a cut-out ring inside an orbit, leaves growing from it. Colours come from --lg-* on each use. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="logo" viewBox="0 0 40 32">
+    <clipPath id="logo-planet"><circle cx="15" cy="16" r="7.5"/></clipPath>
+    <path d="M23.3 4.1A14.5 14.5 0 1 0 26.1 25.3" fill="none" stroke="var(--lg-arc)" stroke-width="1.8" stroke-linecap="round"/>
+    <ellipse cx="15" cy="16" rx="12" ry="3.2" transform="rotate(-22 15 16)" fill="none" stroke="var(--lg-planet)" stroke-width="2"/>
+    <circle cx="15" cy="16" r="7.5" fill="var(--lg-planet)"/>
+    <path d="M3 16A12 3.2 0 0 0 27 16" transform="rotate(-22 15 16)" fill="none" stroke="var(--lg-bg)" stroke-width="1.3" clip-path="url(#logo-planet)"/>
+    <path d="M26.1 25.3Q30 20 31 12" fill="none" stroke="var(--lg-leaf1)" stroke-width="1" stroke-linecap="round"/>
+    <path d="M30.2 14.5Q30 7.5 36 6Q36 12.5 30.2 14.5Z" fill="var(--lg-leaf1)"/>
+    <path d="M28.5 19.5Q32 13 38.5 15.5Q34.5 21 28.5 19.5Z" fill="var(--lg-leaf2)"/>
+    <path d="M27.5 23.2Q32 20.5 36.5 24.5Q31.5 27.5 27.5 23.2Z" fill="var(--lg-leaf1)"/>
+  </symbol>
+</svg>
+
+<div id="map" aria-label="Map: pick the area to investigate"></div>
+
+<!-- Map tools, under Leaflet's zoom control -->
+<div class="tools">
+  <div class="toolbar" role="toolbar" aria-label="Map tools">
+    <button id="tool-pan" class="tool" type="button" aria-label="Move the map" title="Move the map: drag, scroll to zoom, arrow keys">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11.5v-2a1.5 1.5 0 0 1 3 0V12"/><path d="M14 10.5a1.5 1.5 0 0 1 3 0V12"/><path d="M17 11.5a1.5 1.5 0 0 1 3 0V16a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.6-4a1.5 1.5 0 0 1 2.5-1.7L8 15"/></svg>
+    </button>
+    <button id="tool-draw" class="tool" type="button" aria-label="Draw a loop around an area" title="Draw a loop around an area (or hold Shift and drag)">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2-1 3-3 4-5s3-6 6-8 6-1 6 2-4 4-7 4-5 2-5 4 2 3 4 3"/></svg>
+    </button>
+    <button id="tool-points" class="tool" type="button" aria-label="Pick grid cells one by one" title="Pick grid cells one by one">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>
+    </button>
+    <button id="tool-undo" class="tool" type="button" aria-label="Undo the last change to the selection" title="Undo (Ctrl+Z)" disabled>
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+    </button>
+    <button id="tool-clear" class="tool" type="button" aria-label="Clear the selection" title="Clear the selection">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- Brand + place search -->
+<div class="topbar">
+  <div class="search" role="search">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+    <label class="sr" for="place">Go to a place</label>
+    <input id="place" type="search" placeholder="Go to a place…" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="place-results" aria-autocomplete="list">
+    <div id="place-results" class="results" role="listbox" hidden></div>
+  </div>
+</div>
+
+<!-- One line of guidance; doubles as the map legend on the verdict screen -->
+<div id="hint" class="hint" role="status">
+  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/></svg>
+  <span id="hint-text"></span>
+  <button id="hint-action" type="button" hidden></button>
+</div>
+
+<!-- First-run guide (shown once) -->
+<div id="coach" class="coach" role="dialog" aria-label="How it works" hidden></div>
+
+<!-- Dashboard -->
+<aside id="panel" class="panel" aria-label="Dashboard">
+  <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical" aria-controls="panel"
+       aria-label="Resize the panel" tabindex="0" title="Drag to resize · double-click to reset"></div>
+  <div id="panel-head" class="panel-head"></div>
+  <div id="panel-body" class="panel-body"></div>
+  <div id="panel-foot" class="panel-foot"></div>
+</aside>
+
+<!-- Data & math window: the full story of the numbers, filled in by app.js from /api/meta -->
+<div id="about" class="about" role="dialog" aria-modal="true" aria-label="The data and the math" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/vendor/plotly.min.js"></script>
+<script src="/grid.js"></script>
+<script src="/places.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
