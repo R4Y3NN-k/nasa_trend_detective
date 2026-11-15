@@ -30,7 +30,11 @@ from td import cache
 from td.config import MAX_POINTS, MIN_SPACING_DEG
 
 POWER_URL = "https://power.larc.nasa.gov/api/temporal/monthly/point"
-POWER_PARAMS = ("T2M", "PRECTOTCORR", "GWETTOP")
+CORE_PARAMS = ("T2M", "PRECTOTCORR", "GWETTOP")   # what fetch_box() returns (Streamlit app)
+# Extra variables let the map UI ask the questions that fit each climate (snow and frost in Canada, extreme heat
+# in Arabia). Same request, same cache entry per point: POWER returns them all in one call.
+POWER_PARAMS = CORE_PARAMS + ("T2M_MAX", "T2M_MIN", "FROST_DAYS", "PRECSNOLAND", "SNODP", "RH2M",
+                              "EVLAND", "GWETROOT")
 FILL_VALUE = -999.0
 TIMEOUT_S = 90
 RETRIES = 3
@@ -130,17 +134,33 @@ def parse_power(js: dict) -> pd.DataFrame:
     df = pd.DataFrame(cols).sort_index()
     df[df <= FILL_VALUE + 0.5] = np.nan
     df.index.name = "month"
+    coords = (js.get("geometry") or {}).get("coordinates") or []
+    elev = coords[2] if len(coords) > 2 else None
+    df.attrs["elevation_m"] = float(elev) if elev is not None and elev > FILL_VALUE + 0.5 else None
     return df
 
 
 def fetch_point(lat: float, lon: float, start_year: int, end_year: int) -> pd.DataFrame:
-    """Monthly data for one point; the raw POWER answer is cached, so each point is fetched once."""
+    """Monthly data for one point; the raw POWER answer is cached, so each point is fetched once.
+
+    df.attrs["elevation_m"] holds the MERRA-2 cell's mean elevation in metres (None if POWER sent none).
+    """
     key = cache.make_key("power-monthly-point", lat, lon, start_year, end_year, POWER_PARAMS)
     js = cache.get(key)
     if js is None:
         js = _request_power(lat, lon, start_year, end_year)
         cache.put(key, js)
     return parse_power(js)
+
+
+def _keep_attrs(new: pd.DataFrame, old: pd.DataFrame) -> pd.DataFrame:
+    new.attrs.update(old.attrs)
+    return new
+
+
+def elevations(point_data: dict) -> dict:
+    """{(lat, lon): elevation in metres or None} for BoxData.point_data, e.g. to split mountains from lowlands."""
+    return {pt: df.attrs.get("elevation_m") for pt, df in point_data.items()}
 
 
 def is_land(df: pd.DataFrame) -> bool:
@@ -196,11 +216,11 @@ def fetch_box(box, start_year: int, end_year: int, progress=None) -> BoxData:
     if not land:
         raise FetchError("This box has no land points (it looks like open sea). Move it over land.")
     months = pd.date_range(f"{start_year}-01-01", f"{end_year}-12-01", freq="MS", name="month")
-    data = area_mean(land).reindex(months)[list(POWER_PARAMS)]
+    data = area_mean(land).reindex(months)[list(CORE_PARAMS)]
     return BoxData(
         data=data,
         points_total=len(pts),
         points_used=len(land),
         points=[(lat, lon, (lat, lon) in land) for lat, lon in pts],
-        point_data={pt: df.reindex(months) for pt, df in land.items()},
+        point_data={pt: _keep_attrs(df.reindex(months), df) for pt, df in land.items()},
     )

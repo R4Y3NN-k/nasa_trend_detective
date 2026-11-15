@@ -1,0 +1,2118 @@
+// SI-assisted: parts of this file were drafted with Claude (Anthropic) and reviewed by the team
+// Trend Detective map-first UI. Owner: C (dashboard). Talks to web/server.py; grid maths in grid.js.
+'use strict';
+
+const G = window.TDGrid;
+const { DLAT, DLON, snap, keyOf, cellsIn } = G;
+const K_MIN = 4;              // fewest land cells worth analysing (groups and uplands need four)
+
+// ---------------------------------------------------------------- state
+const S = {
+  meta: null,
+  ui: 'simple',               // 'simple' | 'expert': same verdict and numbers, Expert adds depth
+  mode: 'pan',                // map tool: 'pan' | 'draw' | 'points'
+  picked: new Map(),          // key -> [lat, lon]
+  added: new Set(),           // keys the app added itself (nearest land cells), drawn dashed
+  note: null,                 // plain sentence about what the app did to the selection
+  history: [],                // undo stack of selections
+  questions: [], climate: null, climateSig: null,
+  userChose: false, question: null, variable: null,
+  years: [1981, 2025],
+  screen: 'pick',             // 'pick' | 'loading' | 'verdict'
+  result: null, error: null,
+  cross: null, explain: null, seasons: null, scan: null, groups: null,
+  tab: 'series', view: 'anomaly', groupView: '2d', mapGroups: false,
+  capped: false, widened: false,
+  pd: new Map(),              // key -> NASA POWER data for that cell: {status, land, means, ...}
+  isLand: null,               // (lat, lon) -> bool from the bundled land outline, once loaded
+  place: null,                // last place chosen in the search box
+  cmp: null,                  // comparison: {a: {name, cells, var_id}, data} while comparing two places
+};
+
+const RAMPS = {               // light = low, dark = high, for the real per-cell means
+  T2M: [[253, 231, 212], [194, 65, 12]], PRECTOTCORR: [[220, 232, 251], [29, 78, 216]], GWETTOP: [[237, 227, 209], [4, 100, 96]],
+  T2M_MAX: [[254, 226, 204], [153, 27, 27]], T2M_MIN: [[219, 234, 254], [194, 65, 12]], FROST_DAYS: [[224, 242, 254], [12, 74, 110]],
+  PRECSNOLAND: [[241, 245, 249], [30, 64, 175]], SNODP: [[241, 245, 249], [30, 64, 175]], RH2M: [[236, 253, 245], [6, 95, 70]],
+  EVLAND: [[236, 254, 255], [14, 116, 144]], GWETROOT: [[237, 227, 209], [6, 78, 59]],
+};
+
+const GLOSSARY = {
+  trend: 'A steady rise or fall over many years, beyond the usual ups and downs.',
+  anomaly: 'How far a month is from what is usual for that calendar month here. It removes the seasons.',
+  decade: 'Per decade = the change over ten years if the trend stays the same.',
+  range: 'We are 95% confident the true rate lies in this range. If it includes zero, there may be no trend.',
+  fdr: 'When many cells are tested at once, some look significant by luck. This correction keeps such false alarms under 10%.',
+};
+
+// Short definitions behind the (!) icons next to each statistic.
+const STATS = {
+  rate: 'Rate per decade: how much the value changes every 10 years, from a straight line fitted through every month of the record (with the usual seasons removed).',
+  status: 'Clearly = both tests agree, with less than a 5% chance of being luck (p < 0.05). Possibly = at least one test below 10% (p < 0.10). No clear change = the ups and downs could be natural variation.',
+  total: 'Total change: the rate per decade multiplied by the length of the record. It is the change along the trend line, not the gap between the first and last year.',
+  decades: 'Each bar is the average difference from usual across one decade. Bars that climb from left to right show a rise; a single tall last bar means most of the change is recent.',
+  seasons: 'The same two tests, run on one season\'s months only. A season can change faster than the year as a whole.',
+  plain: 'A short summary written by an AI model from the numbers this app computed. Every number in it is checked against the app\'s own results.',
+  cross: 'An independent NASA dataset, tested the same way. If two datasets show the same direction, the trend is more believable.',
+  until: 'Years to significance: how many more years of data would be needed for the trend to pass the 5% test, if it keeps the same rate and the same noise.',
+  fit: 'Straight-line fit (t-test): the chance of a slope this steep if there were no trend. Below 0.05 passes. Newey-West errors allow for one month resembling the next.',
+  rank: 'Mann-Kendall rank test: checks whether later months tend to be higher (or lower) than earlier ones. It does not assume a straight line or bell-shaped data.',
+  range: 'We are 95% confident the true rate lies in this range. If the range includes zero, there may be no trend at all.',
+  sen: 'Sen\'s slope: the middle value of the slopes between every pair of months. Unusual months barely move it.',
+  pct: 'The rate per decade as a share of the long-term average, so small and large quantities can be compared.',
+  record: 'The months used. Missing months are left out, not filled in.',
+  cells: 'A land cell is one NASA POWER grid square, about 55 km tall. Sea cells are left out because they describe the ocean, not the land.',
+  compare: 'Each place is compared with its own usual climate. "Faster" is said only when the two 95% ranges do not overlap.',
+};
+
+// ---------------------------------------------------------------- small helpers
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d) => (v === null || v === undefined ? '–' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(Number(v)).toFixed(d));
+const fmtP = (p) => (p === null || p === undefined ? '–' : p < 0.001 ? '< 0.001' : p.toFixed(3));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const term = (key, text) => `<button type="button" class="term" data-def="${esc(GLOSSARY[key])}">${text}</button>`;
+const mix = (a, b, t) => { t = Math.max(0, Math.min(1, t)); return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`; };
+
+const ICONS = {
+  up: '<path d="M7 17L17 7"/><path d="M9 7h8v8"/>', down: '<path d="M7 7l10 10"/><path d="M17 9v8H9"/>', flat: '<path d="M5 12h14"/>',
+  check: '<path d="M5 12l5 5 9-10"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/>',
+  chev: '<path d="M9 6l6 6-6 6"/>', back: '<path d="M19 12H5"/><path d="M11 6l-6 6 6 6"/>', next: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  save: '<path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/>',
+  print: '<path d="M7 8V4h10v4"/><path d="M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v6H7z"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>', hill: '<path d="M3 19l6-10 4 6 2-3 6 7z"/>',
+  pin: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  book: '<path d="M12 6.5C10.2 4.9 7.3 4.6 4.5 5v13.5c2.8-.4 5.7-.1 7.5 1.5 1.8-1.6 4.7-1.9 7.5-1.5V5c-2.8-.4-5.7-.1-7.5 1.5z"/><path d="M12 6.5V20"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  spin: '<path d="M21 12a9 9 0 1 1-9-9"/>',
+  compare: '<path d="M7 4v16M17 4v16"/><path d="M3 8h8M13 16h8"/>', swap: '<path d="M7 7h13l-4-4M17 17H4l4 4"/>',
+};
+const info = (text, label = 'What does this mean?') =>
+  `<button type="button" class="info" data-tip="${esc(text)}" aria-label="${esc(label)}"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.6"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg></button>`;
+const varDef = (vid) => {
+  const v = S.meta && S.meta.variables[vid];
+  return v ? `${v.name}: ${v.definition || ''}${v.units ? ` Unit: ${v.units}.` : ''}` : '';
+};
+const varInfo = (vid) => (S.meta && S.meta.variables[vid] ? info(varDef(vid), `What is ${S.meta.variables[vid].name.toLowerCase()}?`) : '');
+const ic = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+
+// Preferences survive a reload when the browser allows storage; the app works the same without it.
+const pref = {
+  get(k, d) { try { return localStorage.getItem('td.' + k) ?? d; } catch (_) { return d; } },
+  set(k, v) { try { localStorage.setItem('td.' + k, v); } catch (_) { /* private mode: fine */ } },
+};
+
+async function api(path, body) {
+  const resp = await fetch(path, body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await resp.json().catch(() => ({ error: 'The server sent an unreadable answer.' }));
+  if (!resp.ok) throw new Error(data.error || `Server error ${resp.status}`);
+  return data;
+}
+
+// Direction and certainty in words, with an icon: colour is only the third signal.
+function statusOf(tier, slope) {
+  if (tier === 'none' || !slope) return { cls: 'flat', icon: 'flat', words: 'No clear change yet' };
+  const up = slope > 0;
+  return { cls: (up ? 'up' : 'down') + (tier === 'suggestive' ? ' maybe' : ''), icon: up ? 'up' : 'down',
+    words: `${tier === 'significant' ? 'Clearly' : 'Possibly'} ${up ? 'rising' : 'falling'}` };
+}
+
+// ---------------------------------------------------------------- map
+const map = L.map('map', {
+  zoomControl: false, attributionControl: true, minZoom: 2,
+  zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90, wheelDebounceTime: 20,
+  inertia: true, inertiaDeceleration: 4000, inertiaMaxSpeed: 1500, easeLinearity: 0.25, worldCopyJump: true,
+  keyboard: true, keyboardPanDelta: 120, boxZoom: false,
+}).setView([34.2, 9.6], 6);
+L.control.zoom({ position: 'topleft' }).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+  maxZoom: 18, subdomains: 'abc',
+  attribution: '© OpenStreetMap contributors, tiles HOT · data NASA POWER (MERRA-2)',
+}).addTo(map);
+
+const pointsLayer = L.layerGroup().addTo(map);
+const zonesLayer = L.layerGroup().addTo(map);
+const cmpLayer = L.layerGroup().addTo(map);
+let lasso = null;
+const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const phone = () => window.innerWidth <= 820;
+const mapPadding = () => (phone() ? { paddingTopLeft: [60, 70], paddingBottomRight: [20, Math.round(window.innerHeight * 0.56)] }
+  : { paddingTopLeft: [80, 70], paddingBottomRight: [470, 70] });
+
+function setMode(mode) {
+  S.mode = mode;
+  const drawing = mode === 'draw';
+  map.getContainer().classList.toggle('drawing', drawing);
+  if (drawing) map.dragging.disable(); else map.dragging.enable();
+  for (const [id, on] of [['tool-pan', mode === 'pan'], ['tool-draw', drawing], ['tool-points', mode === 'points']]) $(id).setAttribute('aria-pressed', String(on));
+  updateHint();
+  renderPoints();
+}
+
+function updateHint() {
+  const text = $('hint-text'), act = $('hint-action');
+  act.hidden = true;
+  if (S.screen === 'verdict') {
+    const groups = S.tab === 'groups' && S.mapGroups;
+    text.innerHTML = groups ? 'Each colour is a group of cells that change alike'
+      : S.result && S.result.zones && S.result.zones.length
+        ? '<span class="legend-sw" style="background:#C2410C"></span>rising<span class="legend-sw" style="background:#1D4ED8"></span>falling · a dot marks a clear trend at that cell'
+        : 'The cells used for this verdict';
+  } else if (S.screen === 'compare' && S.cmp && S.cmp.data) {
+    const D = S.cmp.data;
+    text.innerHTML = `<span class="legend-sw cmp-a"></span>${esc(D.a.name)}<span class="legend-sw cmp-b"></span>${esc(D.b.name)}`;
+  } else if (S.screen === 'loading') text.textContent = S.cmp ? 'Comparing the two places…' : 'Fetching NASA POWER data…';
+  else if (S.place && S.placeFresh) {
+    text.textContent = `${S.place.name}: draw a loop, or`;
+    act.textContent = S.cmp ? 'Use this area as place B' : 'Investigate this area'; act.hidden = false;
+  } else if (S.cmp && !S.picked.size) text.textContent = `Place B: draw a loop or search for a place to compare with ${S.cmp.a.name}`; else if (S.mode === 'draw') text.textContent = 'Draw one loop around your area · Esc to cancel';
+  else if (S.mode === 'points') text.textContent = `Tap grid cells to add or remove them (up to ${S.meta ? S.meta.max_points : 30})`;
+  else text.textContent = phone() ? 'Pen tool: draw a loop around an area' : 'Drag to move · pen tool or Shift + drag to draw a loop around an area';
+}
+
+let flashTimer = null;
+function flash(msg) {
+  $('hint-text').textContent = msg; $('hint-action').hidden = true;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { flashTimer = null; updateHint(); }, 2600);
+}
+
+function renderPoints() {
+  pointsLayer.clearLayers();
+  if (S.screen === 'compare') return;
+  const cap = S.meta ? S.meta.max_points : 30;
+  const show = new Map(S.picked);
+  if (S.mode === 'points' && S.screen === 'pick') {
+    const b = map.getBounds();
+    let stride = 1, cells;
+    do { cells = cellsIn(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), stride); stride++; } while (cells.length > 700);
+    for (const [lat, lon] of cells) if (!show.has(keyOf(lat, lon))) show.set(keyOf(lat, lon), [lat, lon]);
+  }
+  const ramp = rampFor();
+  const zoned = S.screen === 'verdict' && S.result && S.result.zones && S.result.zones.length;
+  for (const [key, [lat, lon]] of show) {
+    const on = S.picked.has(key), d = S.pd.get(key);
+    if (zoned && d && d.status === 'ok' && d.land) continue;   // the zone squares already show these cells
+    let style;
+    if (!on) style = { radius: 4, color: '#1B2A8C', weight: 1.5, fillColor: '#FFFFFF', fillOpacity: 1 };
+    else if (d && d.status === 'ok' && !d.land) style = { radius: 6, color: '#5A5B60', weight: 2, fillColor: '#FFFFFF', fillOpacity: 1, dashArray: '2 3' };
+    else if (d && d.status === 'ok') style = { radius: 8, color: '#FFFFFF', weight: 2, fillColor: ramp.color(d.means[ramp.var]), fillOpacity: 1 };
+    else if (d && d.status === 'error') style = { radius: 6, color: '#B42318', weight: 2.5, fillColor: '#FFFFFF', fillOpacity: 1 };
+    else style = { radius: 6, color: '#046460', weight: 2, fillColor: '#FFFFFF', fillOpacity: 1, dashArray: d && d.status === 'loading' ? '3 3' : null };
+    if (on && S.added.has(key)) {   // cells the app added itself: a dashed ring says so
+      L.circleMarker([lat, lon], { radius: 13, color: '#1F2024', weight: 1.5, dashArray: '4 4', fill: false, interactive: false }).addTo(pointsLayer);
+    }
+    const m = L.circleMarker([lat, lon], { ...style, interactive: on || (S.mode === 'points' && S.screen === 'pick') });
+    m.bindTooltip(on ? pointTooltip(lat, lon, d, key) : `${lat.toFixed(2)}°, ${lon.toFixed(2)}° · tap to add`, { direction: 'top' });
+    m.on('click', () => {
+      if (S.mode !== 'points' || S.screen !== 'pick') return;
+      if (!S.picked.has(key) && S.picked.size >= cap) { flash(`At most ${cap} cells: NASA POWER is asked once per cell.`); return; }
+      pushHistory();
+      if (S.picked.has(key)) { S.picked.delete(key); S.added.delete(key); } else S.picked.set(key, [lat, lon]);
+      if (lasso) { lasso.remove(); lasso = null; }
+      S.note = null; S.capped = false;
+      selectionChanged();
+    });
+    m.addTo(pointsLayer);
+  }
+}
+
+// Freehand lasso on the map container: pen tool, or Shift + drag from any tool.
+(function setupLasso() {
+  const el = map.getContainer();
+  let drawing = false, path = [], line = null;
+  el.addEventListener('pointerdown', (e) => {
+    if ((S.mode !== 'draw' && !e.shiftKey) || S.screen !== 'pick' || e.button !== 0) return;
+    if (e.target.closest('.leaflet-control')) return;
+    if (S.mode !== 'draw') map.dragging.disable();
+    drawing = true;
+    path = [map.mouseEventToLatLng(e)];
+    line = L.polyline(path, { color: '#046460', weight: 3, dashArray: '8 6', interactive: false }).addTo(map);
+    try { el.setPointerCapture(e.pointerId); } catch (_) { /* pen/synthetic pointers: drawing still works */ }
+    e.preventDefault();
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const ll = map.mouseEventToLatLng(e);
+    if (map.latLngToContainerPoint(path[path.length - 1]).distanceTo(map.latLngToContainerPoint(ll)) < 4) return;
+    path.push(ll);
+    line.setLatLngs(path);
+  });
+  const finish = () => {
+    if (!drawing) return;
+    drawing = false;
+    line.remove();
+    if (S.mode !== 'draw') map.dragging.enable();
+    if (path.length < 5) return;
+    pushHistory();
+    setLasso(path.map((p) => [p.lat, p.lng]));
+    selectLoop(path.map((p) => [p.lat, p.lng]));
+    if (S.mode === 'draw') setMode('pan');
+  };
+  el.addEventListener('pointerup', finish);
+  el.addEventListener('pointercancel', finish);
+  window.cancelLasso = () => { if (drawing) { drawing = false; line.remove(); } };
+})();
+
+function setLasso(latlngs) {
+  if (lasso) { lasso.remove(); lasso = null; }
+  if (latlngs && latlngs.length) {
+    lasso = L.polygon(latlngs, { color: '#046460', weight: 3, dashArray: '10 6', fillColor: '#046460', fillOpacity: 0.1, interactive: false }).addTo(map);
+  }
+}
+
+// ---------------------------------------------------------------- selection: loop -> NASA grid cells
+// Land cells inside the loop; when there are fewer than K_MIN, the nearest land cells are added (ring search
+// on the grid, see grid.js) and the person is told. With the land outline loaded, sea cells are never fetched.
+function selectLoop(loop) {
+  const lats = loop.map((p) => p[0]), lons = loop.map((p) => p[1]);
+  const ring = loop.map((p) => [p[1], p[0]]);
+  const cap = S.meta ? S.meta.max_points : 30;
+  const centre = [(Math.min(...lats) + Math.max(...lats)) / 2, (Math.min(...lons) + Math.max(...lons)) / 2];
+  const at = (stride) => cellsIn(Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons), stride)
+    .filter(([lat, lon]) => G.inRing(lon, lat, ring));
+  const inLoop = at(1);
+  const land = S.isLand ? inLoop.filter((c) => S.isLand(c[0], c[1])) : inLoop;
+  S.added = new Set(); S.note = null; S.capped = false; S.widened = false;
+
+  let cells;
+  if (land.length >= K_MIN || !S.isLand) {
+    let stride = 1;
+    cells = land.length ? land : [snap(centre[0], centre[1])];
+    while (cells.length > cap) { stride++; cells = at(stride).filter((c) => !S.isLand || S.isLand(c[0], c[1])); }
+    S.capped = stride > 1;
+  } else {
+    // Small or coastal loop. Keep its own cells when there are only a few (the coarse outline misses small
+    // islands; NASA's data then decides land or sea), and top up with the nearest land cells.
+    cells = inLoop.length <= 6 ? [...inLoop] : [...land];
+    const have = new Set(cells.map((c) => keyOf(c[0], c[1])));
+    let landCount = land.length;
+    for (const c of G.nearestLandCells(centre[0], centre[1], K_MIN + cells.length, S.isLand, 3)) {
+      if (landCount >= K_MIN) break;
+      const key = keyOf(c[0], c[1]);
+      if (have.has(key)) continue;
+      cells.push(c); have.add(key); S.added.add(key); landCount++;
+    }
+    if (!cells.length) cells = [snap(centre[0], centre[1])];
+    if (S.added.size) {
+      const nearest = `the ${plural(S.added.size, 'nearest land cell')}, shown with a dashed ring`;
+      S.note = !inLoop.length && !S.isLand(centre[0], centre[1]) ? `There is no land inside your loop, so we used ${nearest}.`
+        : !inLoop.length ? `Your loop was smaller than one NASA grid cell (about 55 km), so we used ${nearest}.`
+          : `Your loop held fewer than ${K_MIN} land cells, so we added ${nearest}.`;
+    }
+  }
+  S.picked = new Map(cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
+  selectionChanged();
+}
+
+// A box of about 2° x 2° around a place from the search box.
+function selectAround(place, r = 1) {
+  pushHistory();
+  // Our own box: widen it until it holds enough land, rather than adding cells from outside it.
+  const landIn = (k) => cellsIn(place.lat - k, place.lon - k, place.lat + k, place.lon + k, 1).filter((c) => S.isLand(c[0], c[1])).length;
+  if (S.isLand) while (r < 2.5 && landIn(r) < K_MIN) r += 0.3;
+  const b = [[place.lat - r, place.lon - r], [place.lat - r, place.lon + r], [place.lat + r, place.lon + r], [place.lat + r, place.lon - r]];
+  setLasso(b);
+  selectLoop(b);
+  if (reduceMotion || document.hidden) map.fitBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), animate: false }); else map.flyToBounds(L.latLngBounds(b).pad(0.35), { ...mapPadding(), duration: 0.8 });
+}
+
+// Every picked cell turned out to be sea (NASA's own data says so): use the nearest land cells instead of an error.
+function widenIfAllSea() {
+  const c = pdCounts();
+  if (S.screen !== 'pick' || S.widened || !c.total || c.pending || c.land || !c.sea) return;
+  S.widened = true;
+  const cells = [...S.picked.values()];
+  const centre = [cells.reduce((a, p) => a + p[0], 0) / cells.length, cells.reduce((a, p) => a + p[1], 0) / cells.length];
+  const known = (lat, lon) => { const d = S.pd.get(keyOf(lat, lon)); return d && d.status === 'ok' ? d.land : (S.isLand ? S.isLand(lat, lon) : true); };
+  const near = G.nearestLandCells(centre[0], centre[1], K_MIN, known, 3);
+  if (!near.length) return;
+  for (const [lat, lon] of near) { S.picked.set(keyOf(lat, lon), [lat, lon]); S.added.add(keyOf(lat, lon)); }
+  S.note = `Every cell in your loop is sea, so we used the ${plural(near.length, 'nearest land cell')}, shown with a dashed ring.`;
+  selectionChanged();
+}
+
+function pushHistory() {
+  S.history.push({ cells: [...S.picked.values()], added: [...S.added], note: S.note, capped: S.capped,
+    lasso: lasso ? lasso.getLatLngs()[0].map((ll) => [ll.lat, ll.lng]) : null });
+  if (S.history.length > 30) S.history.shift();
+}
+
+function undo() {
+  if (S.screen !== 'pick' || !S.history.length) return;
+  const h = S.history.pop();
+  S.picked = new Map(h.cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
+  S.added = new Set(h.added); S.note = h.note; S.capped = h.capped; S.widened = true;
+  setLasso(h.lasso);
+  selectionChanged();
+}
+
+let areaTimer = null;
+function selectionChanged() {
+  S.climate = null; S.climateSig = null; S.error = null; S.placeFresh = false;
+  $('tool-undo').disabled = !S.history.length;
+  queuePointData();
+  renderPoints();
+  renderPanel();
+  updateHash();
+  clearTimeout(areaTimer);
+  areaTimer = setTimeout(loadQuestions, 250);
+}
+
+async function loadQuestions() {
+  try {
+    const data = await api('/api/area', { points: [...S.picked.values()] });
+    if (S.climate) return;                    // the climate-ranked list is already in
+    S.questions = data.questions;
+    adoptQuestion();
+  } catch (err) { S.error = err.message; }
+  if (S.screen === 'pick') renderPanel();
+}
+
+// Keep the person's own choice; otherwise select the top question for this place.
+function adoptQuestion() {
+  if (S.restoreQ && S.questions.some((q) => q.id === S.restoreQ)) { S.question = S.restoreQ; S.variable = null; S.restoreQ = null; return; }
+  if (S.variable) return;
+  if (!S.userChose || !S.questions.some((q) => q.id === S.question)) S.question = S.questions[0] ? S.questions[0].id : null;
+  if (S.screen === 'pick') updateHash();
+}
+
+// ---------------------------------------------------------------- real NASA POWER data per picked cell
+const PD_WORKERS = 4;  // same politeness as td/fetch.py
+let pdQueue = [], pdActive = 0, pdFrame = 0;
+
+function queuePointData() {
+  for (const [key, ll] of S.picked) {
+    const d = S.pd.get(key);
+    if (!d || d.status === 'error') { S.pd.set(key, { status: 'queued' }); pdQueue.push([key, ll]); }
+  }
+  pumpPointData();
+}
+
+function pumpPointData() {
+  while (pdActive < PD_WORKERS && pdQueue.length) {
+    const [key, [lat, lon]] = pdQueue.shift();
+    if (!S.picked.has(key)) { S.pd.delete(key); continue; }
+    pdActive++;
+    S.pd.set(key, { status: 'loading' });
+    api('/api/point', { lat, lon })
+      .then((d) => S.pd.set(key, { status: 'ok', ...d }))
+      .catch((err) => S.pd.set(key, { status: 'error', error: err.message }))
+      .finally(() => { pdActive--; pdChanged(); pumpPointData(); setTimeout(afterPointData, 0); });   // not via rAF: hidden tabs pause it
+  }
+  pdChanged();
+}
+
+// Runs on a timer, not an animation frame, so it also updates a tab that is in the background.
+function afterPointData() { widenIfAllSea(); renderPoints(); patch('sec-area', areaHtml()); syncGo(); maybeScan(); maybeClimate(); }
+
+function pdChanged() {
+  if (pdFrame) return;
+  pdFrame = requestAnimationFrame(() => { pdFrame = 0; renderPoints(); patch('sec-area', areaHtml()); syncGo(); });
+}
+
+function pdCounts() {
+  const c = { total: S.picked.size, ok: 0, land: 0, sea: 0, error: 0, pending: 0 };
+  for (const key of S.picked.keys()) {
+    const d = S.pd.get(key);
+    if (!d || d.status === 'queued' || d.status === 'loading') c.pending++;
+    else if (d.status === 'error') c.error++;
+    else { c.ok++; if (d.land) c.land++; else c.sea++; }
+  }
+  return c;
+}
+
+function rampFor() {
+  const vid = chosenVars().primary || 'T2M';
+  const [lo, hi] = RAMPS[vid] || RAMPS.T2M;
+  const vals = [...S.picked.keys()].map((k) => S.pd.get(k)).filter((d) => d && d.status === 'ok' && d.land)
+    .map((d) => d.means[vid]).filter((v) => v !== null && v !== undefined);
+  const min = vals.length ? Math.min(...vals) : 0, max = vals.length ? Math.max(...vals) : 1;
+  return { var: vid, min, max, n: vals.length, lo, hi,
+    color: (v) => (v === null || v === undefined ? '#9A9B9F' : mix(lo, hi, max > min ? (v - min) / (max - min) : 0.6)) };
+}
+
+function valueText(vid, v) {
+  const info = (S.meta && S.meta.variables[vid]) || { units: '', decimals: 2 };
+  return v === null || v === undefined ? '–' : `${Number(v).toFixed(info.decimals ?? 2)} ${info.units || ''}`.trim();
+}
+
+function pointTooltip(lat, lon, d, key) {
+  const head = `<strong>NASA POWER cell ${lat.toFixed(2)}°, ${lon.toFixed(2)}°</strong>`;
+  const extra = S.added.has(key) ? '<br>Added by the app: nearest land cell' : '';
+  if (!d || d.status === 'queued') return `${head}<br>Waiting to load…${extra}`;
+  if (d.status === 'loading') return `${head}<br>Loading from NASA POWER…${extra}`;
+  if (d.status === 'error') return `${head}<br>Could not load: ${esc(d.error)}`;
+  if (!d.land) return `${head}<br>Sea: left out of the average`;
+  const rows = Object.keys(S.meta.variables).filter((v) => v in d.means)
+    .map((v) => `${esc(S.meta.variables[v].name)}: <strong>${esc(valueText(v, d.means[v]))}</strong>`).join('<br>');
+  const elev = d.elevation_m !== null && d.elevation_m !== undefined ? ` · ${Math.round(d.elevation_m)} m` : '';
+  return `${head} · land${elev}<br>${rows}<br><span style="color:#5A5B60">Mean ${d.first} to ${d.last} · ${d.months} months</span>${extra}`;
+}
+
+// ---------------------------------------------------------------- climate-aware questions and the quick scan
+let climateTimer = null;
+function maybeClimate() {
+  if (S.screen !== 'pick') return;
+  const loaded = [...S.picked.keys()].filter((k) => { const d = S.pd.get(k); return d && d.status === 'ok' && d.land; });
+  if (!loaded.length) return;
+  const sig = loaded.sort().join('|');
+  if (S.climateSig === sig) return;
+  S.climateSig = sig;
+  clearTimeout(climateTimer);
+  climateTimer = setTimeout(async () => {
+    const sum = {}, wsum = {};
+    for (const k of loaded) {
+      const d = S.pd.get(k), w = Math.cos(d.lat * Math.PI / 180);
+      for (const [v, x] of Object.entries(d.means || {})) {
+        if (x === null || x === undefined) continue;
+        sum[v] = (sum[v] || 0) + w * x; wsum[v] = (wsum[v] || 0) + w;
+      }
+    }
+    const means = Object.fromEntries(Object.keys(sum).map((v) => [v, sum[v] / wsum[v]]));
+    try {
+      const d = await api('/api/climate', { means });
+      if (S.climateSig !== sig || S.screen !== 'pick' || !d.questions || !d.questions.length) return;
+      S.questions = d.questions; S.climate = d.climate;
+      adoptQuestion();
+      renderPanel(); renderPoints();
+    } catch (_) { /* the full scan will still set the questions */ }
+  }, 150);
+}
+
+const scanSig = () => `${[...S.picked.keys()].sort().join('|')}#${S.years.join('-')}`;
+
+function maybeScan() {
+  const c = pdCounts();
+  if (!c.total || c.pending || !c.land || S.screen !== 'pick') return;
+  const sig = scanSig();
+  if (S.scan && S.scan.sig === sig) return;
+  S.scan = { sig, status: 'loading' };
+  api('/api/scan', { points: [...S.picked.values()], years: S.years })
+    .then((d) => {
+      if (!S.scan || S.scan.sig !== sig) return;
+      S.scan = { sig, status: 'ok', data: d.scan };
+      if (d.questions && d.questions.length) { S.questions = d.questions; S.climate = d.climate; adoptQuestion(); }
+    })
+    .catch((err) => { if (S.scan && S.scan.sig === sig) S.scan = { sig, status: 'error', error: err.message }; })
+    .finally(() => { if (S.screen === 'pick') renderPanel(); });
+}
+
+function scanStatus(vid) {
+  const s = S.scan && S.scan.status === 'ok' && S.scan.sig === scanSig() ? S.scan.data.find((x) => x.var_id === vid) : null;
+  if (!s) return S.scan && S.scan.status === 'loading' ? '<span class="skel w40" style="margin-top:6px"></span>' : '';
+  const st = statusOf(s.tier, s.direction === 'falling' ? -1 : 1);
+  return `<span class="status ${st.cls}">${ic(st.icon, 's')}${st.words}<span class="rate num">· ${esc(s.rate_per_decade)} per decade</span> <span class="info inline" data-tip="${esc(`Quick check: ${STATS.status} ${STATS.rate}`)}" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg></span></span>`;
+}
+
+function chosenVars() {
+  if (S.variable) return { primary: S.variable, linked: null, why: '' };
+  const q = S.questions.find((x) => x.id === S.question);
+  return q ? { primary: q.primary, linked: q.linked, why: q.why } : { primary: null, linked: null, why: '' };
+}
+
+// ---------------------------------------------------------------- panel: shared shell
+function patch(id, html) {            // replace one section without redrawing the rest (keeps scroll and open details)
+  const el = $(id);
+  if (el) el.outerHTML = html;
+}
+
+function headHtml() {
+  const [first, last] = S.meta ? S.meta.years : [1981, 2025];
+  const left = S.screen === 'verdict' || S.screen === 'compare'
+    ? `<button type="button" class="link" data-act="back">${ic('back', 's')}${S.screen === 'compare' ? 'Change place B' : 'Change area or question'}</button>`
+    : `<span class="head-name"><strong>Trend Detective</strong><span class="where" title="${last - first + 1} years of monthly NASA data">NASA data · ${first}–${last}</span></span>`;
+  const tips = { simple: 'Simple: the answer in plain words and the key charts', expert: 'Expert: every test, number, map and method' };
+  const seg = ['simple', 'expert'].map((m) => `<button type="button" data-act="ui" data-ui="${m}" aria-pressed="${S.ui === m}" title="${tips[m]}">${m === 'simple' ? 'Simple' : 'Expert'}</button>`).join('');
+  const mark = '<svg class="mark" role="img" aria-label="Trend Detective"><use href="#logo"/></svg>';
+  return `<div class="row" style="gap:10px;align-items:center;min-width:0">${mark}${left}</div>
+    <div class="row" style="gap:7px;align-items:center;flex:none">
+      <div class="seg" role="group" aria-label="Level of detail">${seg}</div>
+      <button type="button" class="ab-open" data-act="about" title="The data &amp; the math behind every verdict" aria-label="The data and the math">${ic('book', 's')}</button>
+    </div>`;
+}
+
+function renderPanel() {
+  if (!S.meta) return;
+  if (!flashTimer) updateHint();
+  $('panel-head').innerHTML = headHtml();
+  if (S.screen === 'loading') return renderLoading();
+  drawCmpLayer();
+  if (S.screen === 'verdict') return renderVerdict();
+  if (S.screen === 'compare') return renderCompare();
+  return renderPick();
+}
+
+// ---------------------------------------------------------------- panel: pick screen
+function areaHtml() {
+  const c = pdCounts();
+  if (!c.total) return '<div id="sec-area"></div>';
+  const done = c.ok + c.error, loading = c.pending > 0;
+  const ramp = rampFor();
+  const info = S.meta.variables[ramp.var] || { name: ramp.var };
+  const counts = loading
+    ? `Reading the climate… <span class="num">${done} of ${c.total}</span> cells`
+    : `${plural(c.land, 'land cell')}${c.sea ? ` · ${c.sea} sea, left out` : ''}${c.error ? ` · ${c.error} failed` : ''}`;
+  const climate = S.climate ? `<p class="t-body"><strong>${esc(S.climate.label)}</strong>: ${esc(S.climate.reason)}.</p>` : '';
+  const legend = ramp.n > 1 && !loading ? `<div class="stack tight no-print">
+      <div class="ramp" style="background:linear-gradient(90deg, rgb(${ramp.lo.join(',')}), rgb(${ramp.hi.join(',')}))"></div>
+      <div class="ends"><span>${esc(valueText(ramp.var, ramp.min))}</span><span>dot colour: average ${esc(info.name.toLowerCase())} ${varInfo(ramp.var)}</span><span>${esc(valueText(ramp.var, ramp.max))}</span></div></div>` : '';
+  const allSea = !loading && !c.land && c.sea ? '<p class="note">These cells are all sea. Move the loop over land.</p>' : '';
+  return `<div id="sec-area" class="stack">
+    <p class="t-cap" aria-live="polite">${counts}</p>
+    ${loading ? `<div class="progress"><i style="width:${Math.round(100 * done / c.total)}%"></i></div>` : ''}
+    ${climate}${legend}${allSea}
+    ${S.note ? `<p class="t-cap">${esc(S.note)}</p>` : ''}
+    ${S.capped ? `<p class="t-cap">Large area: cells are sampled evenly so at most ${S.meta.max_points} are fetched.</p>` : ''}
+  </div>`;
+}
+
+function yearOptions(selected, from, to) {
+  let html = '';
+  for (let y = from; y <= to; y++) html += `<option value="${y}" ${y === selected ? 'selected' : ''}>${y}</option>`;
+  return html;
+}
+
+function renderPick() {
+  const n = S.picked.size;
+  const [y0, y1] = S.years, [first, last] = S.meta.years;
+  if (S.cmp) return renderPickB();
+  if (!n) {
+    $('panel-body').innerHTML = `<div class="screen">
+      <div class="stack">
+        <h1 class="t-display">Is the climate changing where you live?</h1>
+        <p class="t-body">Check the evidence yourself. Trend Detective tests 45 years of NASA data for the place you choose and tells you, in plain words, whether a change is real.</p>
+      </div>
+      <ol class="stack t-body" style="counter-reset:s">
+        <li><strong>1.</strong> Find a place: move the map or use the search box.</li>
+        <li><strong>2.</strong> Draw a loop around it with the pen tool (or hold Shift and drag).</li>
+        <li><strong>3.</strong> Choose a question and press Investigate.</li>
+      </ol>
+      <div class="row tight demo-row">
+        <button type="button" class="btn" data-act="example">${ic('play')} Watch an example</button>
+        <button type="button" class="btn quiet" data-act="rundemo">${ic('pin')} Use my location</button>
+      </div>
+      ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
+    </div>`;
+    $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>Investigate ${ic('next')}</button>`;
+    return;
+  }
+  const rows = S.questions.map((q) => {
+    const sel = !S.variable && S.question === q.id;
+    return `<button type="button" class="q" data-act="q" data-q="${esc(q.id)}" aria-pressed="${sel}">
+      <span class="dot"></span><b>${esc(q.label)}</b><small>${esc(q.vars)} <span class="info inline" data-tip="${esc(varDef(q.primary))}" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg></span></small>${scanStatus(q.primary)}</button>`;
+  }).join('');
+  const options = Object.entries(S.meta.variables).map(([id, v]) => `<option value="${esc(id)}" ${S.variable === id ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
+  $('panel-body').innerHTML = `<div class="screen">
+    <div class="stack">
+      <h1 class="t-lead">What do you want to check here?</h1>
+      ${areaHtml()}
+    </div>
+    <div class="stack">
+      <div class="qlist">${rows || '<div class="stack" style="padding:14px 0"><span class="skel w80"></span><span class="skel w60"></span></div>'}</div>
+      <div class="field"><label for="var">Or one variable</label>
+        <select id="var" class="sel grow" data-change="var"><option value="">Choose…</option>${options}</select>${S.variable ? varInfo(S.variable) : info(Object.values(S.meta.variables).map((x) => `${x.name}: ${x.definition || ''}`).join(' '), 'What do the variables mean?')}</div>
+      <div class="field"><label for="y0">Years</label>
+        <select id="y0" class="sel" data-change="y0" aria-label="First year">${yearOptions(y0, first, last - S.meta.min_years + 1)}</select>
+        <span class="t-cap">to</span>
+        <select id="y1" class="sel" data-change="y1" aria-label="Last year">${yearOptions(y1, first + S.meta.min_years - 1, last)}</select>
+        <span class="t-cap num">${y1 - y0 + 1} years</span></div>
+    </div>
+    ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
+  </div>`;
+  $('panel-foot').innerHTML = `<button id="go" class="btn wide" type="button" data-act="go">Investigate ${ic('next')}</button>`;
+  syncGo();
+}
+
+// Choosing place B: the variable and years are A's, so the two trends are measured the same way.
+function cmpBanner() {
+  const A = S.cmp.a, v = S.meta.variables[A.var_id];
+  return `<div class="cmp-banner stack tight">
+    <p class="t-cap"><span class="legend-sw cmp-a"></span><strong>Place A: ${esc(A.name)}</strong> · ${esc(v.name.toLowerCase())}, ${A.years[0]} to ${A.years[1]}</p>
+    <p class="t-body">Now pick <strong>place B</strong>: draw a loop around it or search for it. It will be measured the same way.</p>
+    <button type="button" class="link" data-act="cend">Cancel the comparison</button>
+  </div>`;
+}
+
+function renderPickB() {
+  const n = S.picked.size, A = S.cmp.a;
+  $('panel-body').innerHTML = `<div class="screen">
+    <div class="stack"><h1 class="t-lead">Compare ${esc(A.name)} with another place</h1>${cmpBanner()}</div>
+    ${n ? `<div class="stack"><p class="t-cap"><span class="legend-sw cmp-b"></span><strong>Place B: ${esc(placeName([...S.picked.values()]))}</strong></p>${areaHtml()}</div>` : ''}
+    ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
+  </div>`;
+  $('panel-foot').innerHTML = `<button id="go" class="btn wide" type="button" data-act="go">${ic('compare')}Compare with ${esc(A.name)}</button>`;
+  syncGo();
+}
+
+function syncGo() {
+  const go = $('go');
+  if (!go) return;
+  const c = pdCounts();
+  const ready = S.picked.size > 0 && chosenVars().primary && S.years[1] - S.years[0] + 1 >= S.meta.min_years && !(c.sea && !c.land && !c.pending);
+  go.disabled = !ready;
+}
+
+// ---------------------------------------------------------------- investigate
+async function investigate() {
+  const { primary, linked, why } = chosenVars();
+  if (!primary) return;
+  S.screen = 'loading'; S.error = null; S.cross = null; S.explain = null; S.seasons = null; S.groups = null; S.mapGroups = false;
+  zonesLayer.clearLayers();
+  renderPanel(); renderPoints();
+  try {
+    S.result = await api('/api/analyze', { points: [...S.picked.values()], var_id: primary, linked, why, years: S.years });
+    S.screen = 'verdict'; S.tab = 'series'; S.view = 'anomaly';
+    drawZones();
+    loadCrossCheck();
+    loadSeasons();
+  } catch (err) {
+    S.screen = 'pick'; S.error = err.message;
+  }
+  renderPanel(); renderPoints(); updateHash();
+}
+
+// The second dataset can take a minute, so the verdict shows first and this part fills in after.
+async function loadCrossCheck() {
+  const R = S.result;
+  if (!R.has_second_source) { S.cross = { status: 'none' }; return loadExplain(R); }
+  S.cross = { status: 'loading' };
+  try {
+    const data = await api('/api/crosscheck', { points: [...S.picked.values()], var_id: R.var_id, years: R.years });
+    if (S.result === R) S.cross = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.cross = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R) { patch('sec-cross', crossHtml()); drawCharts(); }
+  loadExplain(R);
+}
+
+async function loadExplain(R) {
+  if (S.result !== R) return;
+  S.explain = { status: 'loading' };
+  const cross = S.cross && S.cross.status === 'ok' ? S.cross.data : null;
+  try {
+    const data = await api('/api/explain', {
+      points: [...S.picked.values()], var_id: R.var_id, years: R.years, question_id: S.variable ? null : S.question,
+      cross: cross && { state: cross.state, headline: cross.headline, detail: cross.detail },
+    });
+    if (S.result === R) S.explain = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.explain = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R) patch('sec-explain', explainHtml());
+}
+
+async function loadSeasons() {
+  const R = S.result;
+  S.seasons = { status: 'loading' };
+  try {
+    const data = await api('/api/seasons', { points: [...S.picked.values()], var_id: R.var_id, years: R.years });
+    if (S.result === R) S.seasons = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.seasons = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R) patch('sec-seasons', seasonsHtml());
+}
+
+async function loadGroups() {
+  const R = S.result;
+  S.groups = { status: 'loading' };
+  try {
+    const data = await api('/api/clusters', { points: [...S.picked.values()], years: R.years });
+    if (S.result === R) S.groups = { status: 'ok', data };
+  } catch (err) {
+    if (S.result === R) S.groups = { status: 'error', error: err.message };
+  }
+  if (S.screen === 'verdict' && S.result === R && S.tab === 'groups') { patch('sec-tab', tabHtml()); drawCharts(); syncGroupsOnMap(); updateHint(); }
+}
+
+function backToPick() {
+  S.screen = 'pick'; S.result = null; S.cross = null; S.explain = null; S.seasons = null; S.groups = null; S.mapGroups = false;
+  zonesLayer.clearLayers(); highlightCell(null);
+  if (lasso) lasso.addTo(map);
+  renderPanel(); renderPoints(); updateHash();
+  setTimeout(afterPointData, 0);
+}
+
+function newCase() {
+  pushHistory();
+  S.cmp = null; drawCmpLayer();
+  S.picked.clear(); S.added.clear(); S.note = null; S.capped = false; S.variable = null; S.userChose = false; S.place = null;
+  S.question = S.questions[0] ? S.questions[0].id : null;
+  setLasso(null);
+  backToPick();
+  $('tool-undo').disabled = !S.history.length;
+  setMode('pan');
+}
+
+// ---------------------------------------------------------------- verdict: sections
+function explainHtml() {
+  const E = S.explain;
+  if (E && E.status === 'error') return '<section id="sec-explain"></section>';
+  if (!E || E.status === 'loading') {
+    return `<section id="sec-explain" class="stack" aria-live="polite"><h2 class="t-title">In plain words ${info(STATS.plain)}</h2>
+      <span class="skel"></span><span class="skel w80"></span><span class="skel w60"></span></section>`;
+  }
+  const D = E.data;
+  const by = D.source === 'gemini'
+    ? 'Written by an AI model (Google Gemini) from the numbers this app computed, and checked to contain no others.'
+    : 'Written by the app from its own results.';
+  const next = (D.next || []).slice(0, 3).map((q) => `<li><button type="button" class="link" data-act="next" data-q="${esc(q.id)}">${esc(q.label)}${ic('next', 's')}</button></li>`).join('');
+  return `<section id="sec-explain" class="stack" aria-live="polite">
+    <h2 class="t-title">In plain words ${info(STATS.plain)}</h2>
+    <p class="t-body" style="color:var(--ink)">${esc(D.summary)}</p>
+    <p class="t-cap">${by}</p>
+    ${next ? `<div class="stack tight no-print" style="padding-top:4px"><h3 class="t-cap" style="font-weight:600;color:var(--char)">Investigate next, same area</h3><ul class="stack tight">${next}</ul></div>` : ''}
+  </section>`;
+}
+
+// A decade the record only partly covers (e.g. 2020 to 2025) is labelled with its years, not "2020s".
+function decadeLabel(x) {
+  const n = x.last_year - x.first_year + 1;
+  return n < 10 ? `${x.first_year}–${String(x.last_year).slice(2)}` : x.decade;
+}
+
+function decadesHtml() {
+  const R = S.result, D = R.decades || [], v = R.variable, d = v.decimals ?? 2;
+  if (D.length < 2) return '';
+  const vals = D.map((x) => x.mean || 0);
+  const top = Math.max(0, ...vals), bottom = Math.min(0, ...vals), span = (top - bottom) || 1;
+  const zero = (top / span) * 100;
+  const bars = D.map((x, i) => {
+    const up = (x.mean || 0) >= 0, h = (Math.abs(x.mean || 0) / span) * 100;
+    const y = up ? zero - h : zero;
+    const label = `${x.decade}: ${fmt(x.mean, d)} ${v.units || ''} (${x.first_year} to ${x.last_year}, ${x.months} months)`;
+    return `<button type="button" class="bar ${up ? 'up' : 'down'}" style="--i:${i};--origin:${up ? 'bottom' : 'top'}" data-hover="decade" data-y0="${x.first_year}" data-y1="${x.last_year}" aria-label="${esc(label)}" title="${esc(label)}">
+      <span class="plot"><span style="position:absolute;inset:18px 0">
+        <span class="zero" style="top:${zero}%"></span>
+        <span class="fill" style="top:${y}%;height:${Math.max(h, 0.8)}%"></span>
+        <span class="val" style="${up ? `bottom:calc(${100 - y}% + 3px)` : `top:calc(${y + h}% + 3px)`}">${fmt(x.mean, d)}</span>
+      </span></span>
+      <span class="lab">${esc(decadeLabel(x))}</span></button>`;
+  }).join('');
+  const last = D[D.length - 1];
+  const partial = last.last_year - last.first_year + 1 < 10
+    ? ` The last bar covers only ${last.last_year - last.first_year + 1} years (${last.first_year} to ${last.last_year}).` : '';
+  return `<section class="stack">
+    <div class="stack tight"><h2 class="t-title">Decade by decade ${info(STATS.decades)}</h2>
+      <p class="t-cap">Average ${term('anomaly', 'difference from usual')} in each decade, in ${esc(v.units || 'units')}. Zero is the ${R.years[0]} to ${R.years[1]} average.${partial}</p></div>
+    <div class="bars" role="group" aria-label="Average anomaly per decade">${bars}</div>
+  </section>`;
+}
+
+function untilHtml() {
+  const r = S.result.res, yts = r.years_to_significance;
+  if (r.tier === 'significant' || yts === null || yts === undefined || yts > 50) return '';
+  const span = r.span_years, year = Math.round(S.result.years[1] + yts);
+  return `<section class="stack tight">
+    <p class="t-body">Not settled yet: if this rate continued, about <strong class="num">${Math.round(yts)} more years</strong> of data would be needed to be sure, around ${year}. ${info(STATS.until)}</p>
+    <div class="until" role="img" aria-label="${Math.round(span)} years of data so far, about ${Math.round(yts)} more needed"><i style="width:${Math.round(100 * span / (span + yts))}%"></i></div>
+    <div class="ends"><span>${S.result.years[0]}</span><span>${S.result.years[1]} · today</span><span>about ${year}</span></div>
+  </section>`;
+}
+
+function accessReason(text) {
+  return /BadAuthentication|credential|Earthdata Login/i.test(text || '') ? 'the NASA Earthdata login in .env is missing or was refused' : (text || 'no answer from Giovanni');
+}
+
+function crossHtml() {
+  const R = S.result, C = S.cross, expert = S.ui === 'expert';
+  const open = (inner, cls = '') => `<section id="sec-cross" class="stack ${cls}" aria-live="polite">${inner}</section>`;
+  const quiet = (text) => (expert ? open(`<p class="t-cap">${esc(text)}</p>`) : open(''));
+  if (!R.has_second_source || (C && C.status === 'none')) return quiet(`No independent NASA dataset for ${R.variable.name.toLowerCase()} yet.`);
+  if (!C || C.status === 'loading') {
+    return open(`<p class="t-cap">${ic('spin', 's spin')} Checking a second NASA dataset…</p><span class="skel w80"></span>`);
+  }
+  if (C.status === 'error') return quiet(`Second dataset not checked: ${C.error}`);
+  const D = C.data;
+  if (D.state === 'none') return quiet(`No independent NASA dataset for ${R.variable.name.toLowerCase()} yet.`);
+  if (!D.sources || !D.sources.length) return quiet(`Second dataset not checked: ${accessReason(D.detail)}.`);
+  const look = D.look || D.state, v = R.variable, d = v.decimals ?? 2, u = v.units || '';
+  const head = look === 'agree' ? `<span class="status" style="color:var(--teal-d)">${ic('check')}${D.state === 'agree' ? 'A second NASA dataset agrees on the direction' : esc(D.headline)}</span>`
+    : look === 'disagree' ? `<span class="status" style="color:var(--amber)">${ic('info')}${esc(D.headline)}</span>`
+      : `<span class="status flat">${ic('layers')}${esc(D.headline)}</span>`;
+  const rows = D.sources.map((s) => `<dt>${esc(s.label)}</dt><dd>${fmt(s.slope_decade, d)} ${esc(u)}<small> per decade · ${esc(statusOf(s.tier, s.slope_decade).words.toLowerCase())}${expert && s.ci_decade ? `<br>95% range ${fmt(s.ci_decade[0], d)} to ${fmt(s.ci_decade[1], d)}` : ''}</small></dd>`).join('');
+  return open(`<div class="row tight" style="gap:6px">${head}${info(STATS.cross, 'What is the second dataset?')}</div>
+    <details class="more" ${expert ? 'open' : ''}><summary>${ic('chev', 's')}How do we know?</summary><div class="inside">
+      <p class="t-body">${esc(D.detail)}</p>
+      <dl class="kv">${rows}</dl>
+      ${expert && D.r !== null && D.r !== undefined ? `<p class="t-cap num">Year-to-year agreement between the two: r = ${fmt(D.r, 2)} over ${D.years[0]} to ${D.years[1]}.</p>` : ''}
+      ${expert && D.figure ? '<div id="cross-chart" data-chart="cross"></div>' : ''}
+      ${D.note ? `<p class="t-cap">${esc(D.note)}</p>` : ''}
+    </div></details>`);
+}
+
+function elevationHtml() {
+  const E = S.result.elevation;
+  if (!E || !E.applies) return '';
+  const v = S.result.variable, d = v.decimals ?? 2, u = v.units || '';
+  const row = (name, g) => `<dt>${name}: ${plural(g.points, 'cell')}, about ${g.mean_elevation_m} m</dt><dd>${fmt(g.slope_decade, d)} ${esc(u)}<small> per decade · ${esc(statusOf(g.tier, g.slope_decade).words.toLowerCase())}</small></dd>`;
+  return `<section class="stack tight">
+    <div class="row tight" style="gap:6px"><span class="status flat">${ic('hill')}Uplands and lowlands</span>${info('The cells are split into higher and lower halves by their elevation, and each half is tested on its own. "Faster" is said only when the two 95% ranges do not overlap.')}</div>
+    <p class="t-body">${esc(E.sentence)}</p>
+    ${S.ui === 'expert' ? `<dl class="kv">${row('Higher', E.high)}${row('Lower', E.low)}</dl>
+      <p class="t-cap">Cells range from ${E.range_m[0]} m to ${E.range_m[1]} m, split at ${E.cut_m} m (NASA POWER cell elevation).</p>` : ''}
+  </section>`;
+}
+
+function seasonsHtml() {
+  const Z = S.seasons, open = (inner) => `<section id="sec-seasons" class="stack">${inner}</section>`;
+  if (!Z || Z.status === 'error') return open('');
+  const title = `<h2 class="t-title">Season by season ${info(STATS.seasons)}</h2>`;
+  if (Z.status === 'loading') return open(`${title}<span class="skel"></span><span class="skel w80"></span>`);
+  const rows = Z.data.seasons.filter((s) => s.slope_decade !== null);
+  if (rows.length < 2) return open('');
+  const v = S.result.variable, d = v.decimals ?? 2;
+  const m = Math.max(...rows.map((s) => Math.abs(s.slope_decade))) || 1;
+  const body = rows.map((s) => {
+    const w = (Math.abs(s.slope_decade) / m) * 48, up = s.slope_decade >= 0;
+    const word = { significant: 'clear', suggestive: 'possible', none: 'unclear' }[s.tier];
+    return `<span>${esc(s.label)}</span>
+      <span class="track"><i class="${up ? 'up' : 'down'} ${s.tier === 'none' ? 'unclear' : ''}" style="${up ? `left:50%` : `left:${50 - w}%`};width:${w}%"></i><b style="left:50%"></b></span>
+      <span class="v">${fmt(s.slope_decade, d)} <small>${word}</small></span>`;
+  }).join('');
+  return open(`<div class="stack tight">${title}<p class="t-body">${esc(Z.data.sentence)}</p></div>
+    <div class="seasons" role="group" aria-label="Trend per decade in each season, in ${esc(v.units || 'units')}">${body}</div>
+    <p class="t-cap">Rate per decade in ${esc(v.units || 'units')}, same tests on each season's months. Faded bars are marked unclear: no clear trend in that season.</p>`);
+}
+
+function testsHtml() {
+  const R = S.result, r = R.res, v = R.variable, d = v.decimals ?? 2, u = v.units || '';
+  const [lo, hi] = r.ci_decade;
+  const m = Math.max(Math.abs(lo), Math.abs(hi), Math.abs(r.slope_decade)) * 1.25 || 1;
+  const pos = (x) => ((x + m) / (2 * m)) * 100;
+  const up = r.slope_decade >= 0 ? 'up' : 'down';
+  const res = (p) => (p < 0.05 ? '<span class="pass">passes</span>' : p < 0.10 ? '<span class="weak">borderline</span>' : '<span class="fail">not passed</span>');
+  return `<section class="stack">
+    <h2 class="t-title">The tests</h2>
+    <table class="tests"><thead><tr><th>Test</th><th class="n">p-value</th><th class="n">At 5%</th></tr></thead><tbody>
+      <tr><td>Straight-line fit ${info(STATS.fit)}<small>OLS on monthly anomalies, Newey-West errors (12-month lag)</small></td><td class="n">${fmtP(r.p_ttest)}</td><td class="n">${res(r.p_ttest)}</td></tr>
+      <tr><td>Rank test ${info(STATS.rank)}<small>Mann-Kendall, Hamed-Rao correction for autocorrelation</small></td><td class="n">${fmtP(r.p_mk)}</td><td class="n">${res(r.p_mk)}</td></tr>
+    </tbody></table>
+    <div class="stack tight">
+      <div class="row between" style="font-size:13.5px"><span>95% range of the rate ${info(STATS.range)}</span><strong class="num">${fmt(lo, d)} to ${fmt(hi, d)} ${esc(u)} per decade</strong></div>
+      <div class="range"><span class="band ${up}" style="left:${pos(lo)}%;width:${pos(hi) - pos(lo)}%"></span><span class="zero" style="left:calc(${pos(0)}% - 1px)"></span><span class="est ${up}" style="left:calc(${pos(r.slope_decade)}% - 2px)"></span></div>
+      <div class="ends"><span>${fmt(-m, d)}</span><span>0</span><span>${fmt(m, d)}</span></div>
+    </div>
+    <dl class="kv">
+      <dt>Rate (straight-line fit) ${info(STATS.rate)}</dt><dd>${fmt(r.slope_decade, d)} ${esc(u)}<small> per decade</small></dd>
+      <dt>Sen's slope (robust rate) ${info(STATS.sen)}</dt><dd>${fmt(r.sen_decade, d)} ${esc(u)}<small> per decade</small></dd>
+      ${r.pct_decade !== null && r.pct_decade !== undefined ? `<dt>Share of the average ${info(STATS.pct)}</dt><dd>${fmt(r.pct_decade, 1)}%<small> per decade</small></dd>` : ''}
+      <dt>Record ${info(STATS.record)}</dt><dd>${esc(r.start)} to ${esc(r.end)}<small> · ${r.n_months} months, ${r.missing_months} missing</small></dd>
+      <dt>Cells averaged ${info(STATS.cells)}</dt><dd>${R.points_used} land<small> of ${R.points.length} picked</small></dd>
+      ${r.tier !== 'significant' && r.years_to_significance !== null && r.years_to_significance <= 50 ? `<dt>More data needed at this rate ${info(STATS.until)}</dt><dd>about ${Math.round(r.years_to_significance)} years</dd>` : ''}
+    </dl>
+  </section>`;
+}
+
+function groupsBody() {
+  const Gp = S.groups;
+  if (!Gp || Gp.status === 'loading') return '<div class="stack" role="status"><p class="t-cap">Testing every cell on three variables and grouping the ones that change alike…</p><span class="skel"></span><span class="skel w60"></span></div>';
+  if (Gp.status === 'error') return `<p class="t-body">${esc(Gp.error)}</p>`;
+  const D = Gp.data;
+  if (!D.ok) return `<p class="t-body">${esc(D.reason)}</p>`;
+  const names = D.features.map((f) => f.name.toLowerCase());
+  const list = D.zones.map((z) => `<li><span class="swatch" style="background:${z.color}"></span>
+      <span><strong>Group ${esc(z.zone)}</strong> · ${esc(z.where)} · ${plural(z.points, 'cell')}<br>${esc(z.summary)}</span></li>`).join('');
+  const views = [['2d', 'Flat'], ['3d', '3D']].map(([id, label]) => `<button type="button" data-act="gview" data-gview="${id}" aria-pressed="${S.groupView === id}">${label}</button>`).join('');
+  return `<div class="stack">
+    <p class="t-body">Each cell was tested on its own for ${esc(names[0])}, ${esc(names[1])} and ${esc(names[2])}. Cells whose trends look alike share a colour, here and on the map.</p>
+    <ul class="stack group-list">${list}</ul>
+    <div class="seg" role="group" aria-label="Plot view" style="align-self:flex-start">${views}</div>
+    <div id="groups-chart" data-chart="groups"></div>
+    <p class="t-cap">${S.groupView === '3d' ? `Drag to turn the cube. Up: ${esc(D.features[2].name.toLowerCase())}.` : `Right = warming faster; up = ${esc(names[1])} rising. Hover a dot to find its cell on the map.`} Groups describe the data; they are not a test. Each cell's significance is in the Zones tab.</p>
+  </div>`;
+}
+
+function tabHtml() {
+  const R = S.result, r = R.res, v = R.variable;
+  let body = '';
+  if (S.tab === 'series') {
+    const seg = [['anomaly', 'Anomalies'], ['raw', 'Raw values']].map(([id, label]) => `<button type="button" data-act="view" data-view="${id}" aria-pressed="${S.view === id}">${label}</button>`).join('');
+    body = `<div class="stack"><div class="seg" role="group" aria-label="Series" style="align-self:flex-start">${seg}</div>
+      <div id="chart" data-chart="series"></div>
+      <p class="t-cap">Monthly ${S.view === 'anomaly' ? term('anomaly', 'anomalies') + ' with the fitted trend and its 95% range' : 'values with their 12-month average'}. Hover a decade bar above to mark its years here.</p></div>`;
+  } else if (S.tab === 'zones') {
+    const z = R.zones;
+    body = z && z.length ? `<div class="stack">
+        <p class="t-body">Each square on the map is one cell, tested on its own. A dot means its trend survives the ${term('fdr', 'correction for testing ' + z.length + ' cells at once')} (Benjamini-Hochberg, 10%). Hover a square for its rate, p-values and q-value.</p>
+        <dl class="kv"><dt>Clear rise</dt><dd>${plural(z.filter((x) => x.significant && x.slope_decade > 0).length, 'cell')}</dd>
+          <dt>Clear fall</dt><dd>${plural(z.filter((x) => x.significant && x.slope_decade < 0).length, 'cell')}</dd>
+          <dt>No clear trend</dt><dd>${plural(z.filter((x) => !x.significant).length, 'cell')}</dd></dl></div>`
+      : '<p class="t-body">Pick at least two land cells to compare them.</p>';
+  } else if (S.tab === 'groups') {
+    body = groupsBody();
+  } else if (S.tab === 'evidence') {
+    const L_ = R.link;
+    body = `<div class="stack"><p class="t-body"><strong>${esc(v.name)}.</strong> ${esc(v.definition || '')}</p>
+      ${v.source ? `<p class="t-cap">Source: ${esc(v.source)}</p>` : ''}${v.caveat ? `<p class="t-cap">Caveat: ${esc(v.caveat)}</p>` : ''}
+      ${L_ ? `<hr class="rule"><p class="t-body"><strong>Checked against ${esc(L_.name.toLowerCase())}.</strong> ${esc(L_.why)} ${L_.r === null ? 'Not enough overlapping months to compare.' : `Month-to-month anomalies move together with r = <span class="num">${fmt(L_.r, 2)}</span> (${L_.n} months). A link like this is consistent with a connection; it is not proof of cause.`}</p>` : ''}</div>`;
+  } else {
+    body = `<div class="stack"><ol class="method">
+      <li>NASA POWER monthly values at each picked cell; sea cells left out, land cells averaged by cos(latitude).</li>
+      <li>Anomalies: each month minus its usual value, so the seasons do not look like trends.</li>
+      <li>Rate per decade from a straight-line fit with Newey-West errors (t-test, 95% range).</li>
+      <li>Mann-Kendall (Hamed-Rao) and Sen's slope as a second, rank-based test.</li>
+      <li>Significant only when both tests give p &lt; 0.05 and agree on direction; possible when either gives p &lt; 0.10.</li>
+      <li>Per-cell maps correct for testing many cells at once (Benjamini-Hochberg, 10%).</li>
+    </ol>
+    <p class="t-cap">Climate is usually judged over 30 years or more (World Meteorological Organization); ${r.start.slice(0, 4)} to ${r.end.slice(0, 4)} gives ${Math.round(r.span_years)}. A trend in one variable shows a change here; it does not by itself prove climate change or name a cause.</p>
+    <button type="button" class="link" data-act="about">The data &amp; the math: every step with its formula${ic('next', 's')}</button>
+    <a class="link" href="/docs/validation.md" target="_blank" rel="noopener">How we checked the method (validation notes)${ic('next', 's')}</a></div>`;
+  }
+  return `<div id="sec-tab" data-tabpanel role="tabpanel">${body}</div>`;
+}
+
+function questionTitle() {
+  const q = !S.variable && S.questions.find((x) => x.id === S.question);
+  return q && q.primary === S.result.var_id ? q.label : `What is happening to ${S.result.variable.name.toLowerCase()}?`;
+}
+
+function renderVerdict() {
+  const R = S.result, r = R.res, v = R.variable, d = v.decimals ?? 2, u = v.units || '';
+  const st = statusOf(r.tier, r.slope_decade);
+  const total = r.total_change;
+  const change = r.tier !== 'none' && total !== null && total !== undefined
+    ? `About <strong class="num">${fmt(total, d)} ${esc(u)}</strong> over the ${Math.round(r.span_years)} years since ${R.years[0]}${r.pct_decade !== null && r.pct_decade !== undefined ? ` (${fmt(r.pct_decade, 1)}% of the average ${term('decade', 'per decade')})` : ''}.`
+    : esc(R.words.detail.replace(/\s*This shows a change, not its cause\.?/, ''));
+  const expert = S.ui === 'expert';
+  const tabs = [['series', 'Time series'], ['zones', 'Zones'], ['groups', 'Groups'], ['evidence', 'Evidence'], ['method', 'Method']].map(([id, label]) =>
+    `<button type="button" role="tab" class="tab" data-act="tab" data-tab="${id}" aria-selected="${S.tab === id}">${label}</button>`).join('');
+  const today = new Date().toISOString().slice(0, 10);
+
+  $('panel-body').innerHTML = `<div class="screen">
+    <div class="print-only"><strong>Trend Detective case report</strong> · ${today} · ${plural(R.points_used, 'NASA POWER land cell')} · ${R.years[0]} to ${R.years[1]}</div>
+    <div class="stack">
+      <p class="t-q">${esc(questionTitle())} ${varInfo(R.var_id)}</p>
+      <h1 class="t-display">${esc(R.words.headline)} ${info(STATS.rate, 'What is the rate per decade?')}</h1>
+      <div class="row tight" style="gap:6px"><span class="status big ${st.cls}">${ic(st.icon)}${st.words}</span>${info(STATS.status, 'What does this status mean?')}</div>
+      <p class="t-body">${change}${r.tier !== 'none' && total !== null && total !== undefined ? ` ${info(STATS.total, 'What is the total change?')}` : ''}</p>
+      ${R.recent ? `<p class="t-body recent">${ic('info', 's')}${esc(R.recent.text)}</p>` : ''}
+      <p class="t-cap">This shows a change, not its cause. ${plural(R.points_used, 'land cell')}, ${R.years[0]} to ${R.years[1]}.</p>
+    </div>
+    ${decadesHtml()}
+    ${untilHtml()}
+    <button type="button" class="btn quiet no-print" data-act="compare" style="align-self:flex-start">${ic('compare', 's')}Compare with another place</button>
+    <div class="aside stack" style="gap:16px">${explainHtml()}</div>
+    ${crossHtml()}
+    ${seasonsHtml()}
+    ${elevationHtml()}
+    ${expert ? `<hr class="rule no-print">${testsHtml()}
+      <div class="stack no-print"><div class="tabs" role="tablist" aria-label="Details">${tabs}</div>${tabHtml()}</div>`
+    : `<button type="button" class="link no-print" data-act="ui" data-ui="expert">See the tests, the maps and the method${ic('next', 's')}</button>`}
+    <p class="print-only t-cap">Data: NASA POWER (MERRA-2 reanalysis) monthly values${S.cross && S.cross.status === 'ok' && S.cross.data.sources ? ', cross-checked with a second NASA dataset via Giovanni' : ''}. Method: monthly anomalies; straight-line fit with Newey-West errors and Mann-Kendall test. This shows a change, not its cause. SI-assisted: parts of this app were drafted with Claude (Anthropic) and reviewed by the team.</p>
+  </div>`;
+
+  const menu = expert ? `<details class="menu"><summary class="btn quiet">${ic('save', 's')}Download</summary><div class="items">
+      <button type="button" data-act="csv">Series (CSV)</button>
+      <button type="button" data-act="cells">Per-cell trends (CSV)</button>
+      <button type="button" data-act="json">This case (JSON)</button>
+      <button type="button" data-act="print">Printable report</button></div></details>`
+    : `<button type="button" class="btn quiet" data-act="print">${ic('print', 's')}Report</button>`;
+  $('panel-foot').innerHTML = `<div class="row">${menu}
+      <button type="button" class="btn quiet" data-act="share">${ic('link', 's')}Copy link</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn dark" data-act="new">New case</button></div>
+    <p class="t-cap" style="margin-top:8px;font-size:11.5px">SI-assisted: parts of this app were drafted with Claude (Anthropic) and reviewed by the team.</p>`;
+  drawCharts();
+  syncGroupsOnMap();
+}
+
+// Plotly charts are drawn into whichever chart holders are on screen and not drawn yet.
+function drawCharts() {
+  const R = S.result;
+  if (!R) return;
+  document.querySelectorAll('[data-chart]:not([data-drawn])').forEach((el) => {
+    el.dataset.drawn = '1';
+    const kind = el.dataset.chart;
+    if (kind === 'series') {
+      const fig = R.figures[S.view];
+      Plotly.react(el, fig.data, { ...fig.layout, autosize: true }, { displayModeBar: false, responsive: true });
+    } else if (kind === 'cross' && S.cross && S.cross.status === 'ok' && S.cross.data.figure) {
+      const cf = S.cross.data.figure;
+      Plotly.react(el, cf.data, { ...cf.layout, autosize: true }, { displayModeBar: false, responsive: true });
+    } else if (kind === 'groups' && S.groups && S.groups.status === 'ok' && S.groups.data.ok) {
+      const gf = S.groups.data[S.groupView === '3d' ? 'figure3d' : 'figure2d'];
+      Plotly.react(el, gf.data, { ...gf.layout, autosize: true }, { displayModeBar: S.groupView === '3d', displaylogo: false, responsive: true });
+      el.on('plotly_hover', (ev) => highlightCell(ev.points[0].customdata));
+      el.on('plotly_unhover', () => highlightCell(null));
+    }
+  });
+}
+
+// Hovering a decade bar marks its years on the monthly series (Expert, Time series tab).
+function markYears(y0, y1) {
+  const el = $('chart');
+  if (!el || !el.dataset.drawn || !window.Plotly) return;
+  const shapes = y0 ? [{ type: 'rect', xref: 'x', yref: 'paper', x0: `${y0}-01-01`, x1: `${y1}-12-31`, y0: 0, y1: 1, fillcolor: 'rgba(4,100,96,0.12)', line: { width: 0 } }] : [];
+  try { Plotly.relayout(el, { shapes }); } catch (_) { /* chart is being redrawn */ }
+}
+
+// ---------------------------------------------------------------- map layers for the verdict
+function drawZones() {
+  zonesLayer.clearLayers();
+  const z = S.result && S.result.zones;
+  if (!z || !z.length) return;
+  if (lasso) lasso.remove();
+  const v = S.result.variable, d = Math.max(v.decimals ?? 2, 2);
+  const vmax = Math.max(...z.map((r) => Math.abs(r.slope_decade || 0))) || 1;
+  for (const r of z) {
+    const t = (r.slope_decade || 0) / vmax;
+    const col = t >= 0 ? mix([244, 243, 239], [194, 65, 12], t) : mix([244, 243, 239], [29, 78, 216], -t);
+    const rect = L.rectangle([[r.lat - DLAT / 2, r.lon - DLON / 2], [r.lat + DLAT / 2, r.lon + DLON / 2]],
+      { color: '#FFFFFF', weight: 1, fillColor: col, fillOpacity: 0.85 });
+    rect.bindTooltip(`<strong>${r.lat.toFixed(2)}°, ${r.lon.toFixed(2)}°</strong><br>${fmt(r.slope_decade, d)} ${esc(v.units || '')} per decade · ${(r.slope_decade || 0) >= 0 ? 'rising' : 'falling'}<br>`
+      + `p = ${fmtP(r.p_ttest)} (fit), ${fmtP(r.p_mk)} (rank) · q = ${fmtP(r.q_fdr)}<br>${r.significant ? 'Clear trend after the many-cells correction' : 'No clear trend at this cell'}`);
+    rect.on('mouseover', () => highlightCell([r.lat, r.lon])).on('mouseout', () => highlightCell(null));
+    rect.addTo(zonesLayer);
+    if (r.significant) L.circleMarker([r.lat, r.lon], { radius: 3.5, color: '#1F2024', fillColor: '#1F2024', fillOpacity: 1, interactive: false }).addTo(zonesLayer);
+  }
+}
+
+function syncGroupsOnMap() {
+  const want = S.screen === 'verdict' && S.ui === 'expert' && S.tab === 'groups' && S.groups && S.groups.status === 'ok' && S.groups.data.ok;
+  if (want && !S.mapGroups) {
+    zonesLayer.clearLayers();
+    const ps = S.groups.data.points;
+    for (const p of ps) {
+      L.rectangle([[p.lat - DLAT / 2, p.lon - DLON / 2], [p.lat + DLAT / 2, p.lon + DLON / 2]], { color: '#FFFFFF', weight: 1, fillColor: p.color, fillOpacity: 0.8 })
+        .bindTooltip(`Group ${p.zone} · ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`).addTo(zonesLayer);
+    }
+    map.fitBounds([[Math.min(...ps.map((p) => p.lat)) - DLAT, Math.min(...ps.map((p) => p.lon)) - DLON],
+      [Math.max(...ps.map((p) => p.lat)) + DLAT, Math.max(...ps.map((p) => p.lon)) + DLON]], { ...mapPadding(), maxZoom: 9 });
+    S.mapGroups = true;
+  } else if (!want && S.mapGroups) {
+    S.mapGroups = false;
+    drawZones();
+  }
+}
+
+let highlight = null;
+function highlightCell(ll) {
+  if (highlight) { highlight.remove(); highlight = null; }
+  if (!ll) return;
+  highlight = L.rectangle([[ll[0] - DLAT / 2, ll[1] - DLON / 2], [ll[0] + DLAT / 2, ll[1] + DLON / 2]],
+    { color: '#1F2024', weight: 3, fill: false, interactive: false }).addTo(map);
+}
+
+// ---------------------------------------------------------------- loading screen
+function renderLoading() {
+  const n = S.picked.size;
+  $('panel-body').innerHTML = `<div class="screen" role="status" aria-live="polite">
+    <div class="stack"><p class="t-q">Asking NASA POWER for ${plural(n, 'cell')} and running the tests…</p>
+      <span class="skel" style="height:26px;width:90%"></span><span class="skel" style="height:26px;width:55%"></span><span class="skel w40"></span></div>
+    <div class="stack"><span class="skel"></span><span class="skel w80"></span><span class="skel w60"></span></div>
+    <p class="t-cap">New cells take a few seconds each. Cells fetched before come from the cache.</p></div>`;
+  $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>${ic('spin', 'spin')}Investigating…</button>`;
+}
+
+// ---------------------------------------------------------------- compare two places (same variable, same years)
+const CMP_COLORS = { a: '#6D28D9', b: '#BE185D' };
+
+// A short name for a set of cells: the place searched for, the nearest bundled place, or coordinates.
+function placeName(cells) {
+  const lat = cells.reduce((s, c) => s + c[0], 0) / cells.length, lon = cells.reduce((s, c) => s + c[1], 0) / cells.length;
+  if (S.place && S.place.name !== 'this area' && G.haversineKm(lat, lon, S.place.lat, S.place.lon) < 150) return S.place.name;
+  let best = null, bestKm = 150;
+  for (const [name, , plat, plon] of window.TD_PLACES || []) {
+    const km = G.haversineKm(lat, lon, plat, plon);
+    if (km < bestKm) { best = name; bestKm = km; }
+  }
+  return best ? (bestKm < 60 ? best : `Near ${best}`) :`${Math.abs(lat).toFixed(1)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(1)}° ${lon >= 0 ? 'E' : 'W'}`;
+}
+
+function startCompare() {
+  const R = S.result, cells = [...S.picked.values()];
+  S.cmp = { a: { name: placeName(cells), cells, var_id: R.var_id, years: [...R.years] } };
+  S.variable = R.var_id; S.userChose = true; S.years = [...R.years];
+  pushHistory();
+  S.picked.clear(); S.added.clear(); S.note = null; S.capped = false; S.place = null;
+  setLasso(null);
+  backToPick();
+  setMode('pan');
+}
+
+async function runCompare() {
+  const A = S.cmp.a, cells = [...S.picked.values()];
+  if (!cells.length) return;
+  S.cmp.b = { name: placeName(cells), cells };
+  if (S.cmp.b.name === A.name) S.cmp.b.name += ' (B)';
+  S.cmp.data = null; S.error = null; S.screen = 'loading'; S.result = null;
+  zonesLayer.clearLayers();
+  renderPanel(); renderPoints();
+  try {
+    const data = await api('/api/compare', { var_id: A.var_id, years: A.years,
+      a: { name: A.name, points: A.cells }, b: { name: S.cmp.b.name, points: cells } });
+    if (!S.cmp) return;
+    S.cmp.data = data; S.screen = 'compare';
+    if (lasso) lasso.remove();
+    map.fitBounds(L.latLngBounds(A.cells.concat(cells)).pad(0.3), { ...mapPadding(), maxZoom: 7, animate: !reduceMotion });
+  } catch (err) {
+    S.screen = 'pick'; S.error = err.message;
+  }
+  renderPanel(); renderPoints(); updateHash();
+}
+
+function swapCompare() {
+  const { a, b } = S.cmp;
+  S.cmp = { a: { ...b, var_id: a.var_id, years: a.years } };
+  S.picked = new Map(a.cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
+  S.place = { name: a.name, lat: a.cells[0][0], lon: a.cells[0][1] };
+  runCompare();
+}
+
+function drawCmpLayer() {
+  cmpLayer.clearLayers();
+  if (!S.cmp) return;
+  const sides = [['a', S.cmp.a]];
+  if (S.screen === 'compare' && S.cmp.b) sides.push(['b', S.cmp.b]);
+  for (const [k, side] of sides) {
+    for (const [lat, lon] of side.cells) {
+      L.rectangle([[lat - DLAT / 2, lon - DLON / 2], [lat + DLAT / 2, lon + DLON / 2]],
+        { color: CMP_COLORS[k], weight: 2, fillColor: CMP_COLORS[k], fillOpacity: 0.28 })
+        .bindTooltip(`${k.toUpperCase()}: ${esc(side.name)}`).addTo(cmpLayer);
+    }
+  }
+}
+
+function cmpCard(k, side, v) {
+  const r = side.res, d = v.decimals ?? 2, u = v.units || '', st = statusOf(r.tier, r.slope_decade);
+  return `<div class="cmp-card stack tight">
+    <p class="t-cap"><span class="legend-sw cmp-${k}"></span><strong>${k.toUpperCase()}: ${esc(side.name)}</strong></p>
+    <p><span class="t-title num">${fmt(r.slope_decade, d)}</span> <span class="t-cap">${esc(u)} ${term('decade', 'per decade')}</span></p>
+    <span class="status ${st.cls}">${ic(st.icon)}${st.words} ${info(STATS.status, 'What does this status mean?')}</span>
+    <p class="t-cap">${plural(side.points_used, 'land cell')}</p>
+  </div>`;
+}
+
+// Expert only: why the sentence says "faster" or "similar" (both 95% ranges on one scale), then every test, side by side.
+function cmpEvidenceHtml(D) {
+  const v = D.variable, d = v.decimals ?? 2, u = v.units || '', A = D.a.res, B = D.b.res;
+  const all = [...A.ci_decade, ...B.ci_decade, 0];
+  const pad = (Math.max(...all) - Math.min(...all)) * 0.12 || 1, lo = Math.min(...all) - pad, hi = Math.max(...all) + pad;
+  const pos = (x) => ((x - lo) / (hi - lo)) * 100;
+  const track = (k, r) => `<span><span class="legend-sw cmp-${k}"></span><strong>${k.toUpperCase()}</strong></span>
+    <div class="track"><span class="band ${k}" style="left:${pos(r.ci_decade[0])}%;width:${pos(r.ci_decade[1]) - pos(r.ci_decade[0])}%"></span><span class="zero" style="left:calc(${pos(0)}% - 1px)"></span><span class="est ${k}" style="left:calc(${pos(r.slope_decade)}% - 2px)"></span></div>`;
+  const apart = A.ci_decade[1] < B.ci_decade[0] || B.ci_decade[1] < A.ci_decade[0];
+  const range = (r) => `${fmt(r.ci_decade[0], d)} to ${fmt(r.ci_decade[1], d)}`;
+  const pct = (r) => (r.pct_decade === null || r.pct_decade === undefined ? '–' : `${fmt(r.pct_decade, 1)}%`);
+  const row = (label, tip, a, b) => `<tr><td>${tip ? label.replace('<small>', `${info(tip)}<small>`) : label}${tip && !label.includes('<small>') ? ` ${info(tip)}` : ''}</td><td class="n">${a}</td><td class="n">${b}</td></tr>`;
+  return `<hr class="rule no-print">
+    <section class="stack">
+      <div class="stack tight"><h2 class="t-title">Why the app says that</h2>
+        <p class="t-cap">Each band is the 95% range of a place's rate ${info(STATS.range)}; the mark is the best estimate; the grey line is zero (no change).</p></div>
+      <div class="cmp-range">${track('a', A)}${track('b', B)}</div>
+      <div class="ends" style="padding-left:34px"><span>${fmt(lo, d)}</span><span>${esc(u)} per decade</span><span>${fmt(hi, d)}</span></div>
+      <p class="t-body">${apart ? 'The two bands <strong>do not overlap</strong>: the gap between the two rates is larger than chance would explain.'
+        : 'The two bands <strong>overlap</strong>: the gap between the two rates could be chance, so the app does not call either place faster.'}</p>
+    </section>
+    <section class="stack">
+      <h2 class="t-title">The tests, side by side</h2>
+      <table class="tests cmp"><thead><tr><th></th><th class="n"><span class="legend-sw cmp-a"></span>A</th><th class="n"><span class="legend-sw cmp-b"></span>B</th></tr></thead><tbody>
+        ${row(`Rate <small>${esc(u)} per decade, straight line</small>`, STATS.rate, fmt(A.slope_decade, d), fmt(B.slope_decade, d))}
+        ${row(`Sen's slope <small>${esc(u)} per decade, robust</small>`, STATS.sen, fmt(A.sen_decade, d), fmt(B.sen_decade, d))}
+        ${row('95% range of the rate', '', range(A), range(B))}
+        ${row('Line test <small>p-value</small>', STATS.fit, fmtP(A.p_ttest), fmtP(B.p_ttest))}
+        ${row('Rank test <small>p-value</small>', STATS.rank, fmtP(A.p_mk), fmtP(B.p_mk))}
+        ${row(`Total change <small>${esc(u)} over the record</small>`, STATS.total, fmt(A.total_change, d), fmt(B.total_change, d))}
+        ${A.pct_decade !== null && A.pct_decade !== undefined ? row('Share of the average <small>per decade</small>', STATS.pct, pct(A), pct(B)) : ''}
+        ${row('Record <small>months used</small>', STATS.record, `${A.n_months}`, `${B.n_months}`)}
+        ${row('Land cells averaged', STATS.cells, `${D.a.points_used}`, `${D.b.points_used}`)}
+      </tbody></table>
+      <button type="button" class="link no-print" data-act="about" data-step="5" data-sub="3" style="align-self:flex-start">How two places are compared, with the formulas${ic('next', 's')}</button>
+    </section>`;
+}
+
+function renderCompare() {
+  const D = S.cmp.data, v = D.variable;
+  $('panel-body').innerHTML = `<div class="screen">
+    <div class="stack">
+      <p class="t-q">${esc(v.name)}: ${esc(D.a.name)} and ${esc(D.b.name)}, ${D.years[0]} to ${D.years[1]} ${varInfo(D.var_id)}</p>
+      <h1 class="t-lead">${esc(D.sentence)} ${info(STATS.compare, 'How are the places compared?')}</h1>
+      <div class="cmp-cards">${cmpCard('a', D.a, v)}${cmpCard('b', D.b, v)}</div>
+      <p class="t-cap">Each place is measured against its own usual climate, so a cold and a hot place can be compared. "Faster" is said only when the two 95% ranges do not overlap. This shows a change, not its cause.</p>
+    </div>
+    <section class="stack">
+      <div class="stack tight"><h2 class="t-title">Year by year</h2>
+        <p class="t-cap">Yearly ${term('anomaly', 'difference from usual')} in ${esc(v.units || 'units')}, each place against its own ${D.years[0]} to ${D.years[1]} average.</p></div>
+      <div id="cmp-series" class="chart" style="height:230px"></div>
+    </section>
+    <section class="stack">
+      <div class="stack tight"><h2 class="t-title">Decade by decade</h2>
+        <p class="t-cap">Average difference from usual in each decade.</p></div>
+      <div id="cmp-decades" class="chart" style="height:200px"></div>
+    </section>
+    ${S.ui === 'expert' ? cmpEvidenceHtml(D)
+      : `<button type="button" class="link no-print" data-act="ui" data-ui="expert" style="align-self:flex-start">See the tests behind this comparison${ic('next', 's')}</button>`}
+  </div>`;
+  $('panel-foot').innerHTML = `<div class="row">
+      <button type="button" class="btn quiet" data-act="cswap">${ic('swap', 's')}Swap</button>
+      <button type="button" class="btn quiet" data-act="share">${ic('link', 's')}Copy link</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn dark" data-act="cend">End comparison</button></div>
+    <p class="t-cap" style="margin-top:8px;font-size:11.5px">SI-assisted: parts of this app were drafted with Claude (Anthropic) and reviewed by the team.</p>`;
+  drawCompareCharts();
+}
+
+function drawCompareCharts() {
+  const D = S.cmp && S.cmp.data;
+  if (!D || !window.Plotly) return;
+  const u = D.variable.units || '', font = { family: 'Archivo, system-ui, sans-serif', size: 12, color: '#404248' };
+  const base = { margin: { l: 44, r: 10, t: 8, b: 30 }, font, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    showlegend: true, legend: { orientation: 'h', x: 0, y: 1.14 }, autosize: true,
+    yaxis: { zeroline: true, zerolinecolor: '#9A9893', gridcolor: '#ECEBE6' }, xaxis: { gridcolor: 'rgba(0,0,0,0)' } };
+  const cfg = { displayModeBar: false, responsive: true };
+  const line = (k) => ({ x: D[k].annual.year, y: D[k].annual.value, name: D[k].name, mode: 'lines+markers', type: 'scatter',
+    line: { color: CMP_COLORS[k], width: 2 }, marker: { size: 4 }, hovertemplate: `%{x}: %{y:+.2f} ${u}<extra>${esc(D[k].name)}</extra>` });
+  Plotly.react('cmp-series', [line('a'), line('b')], base, cfg);
+  const bars = (k) => ({ x: D[k].decades.map(decadeLabel), y: D[k].decades.map((x) => x.mean), name: D[k].name, type: 'bar',
+    marker: { color: CMP_COLORS[k] }, hovertemplate: `%{x}: %{y:+.2f} ${u}<extra>${esc(D[k].name)}</extra>` });
+  Plotly.react('cmp-decades', [bars('a'), bars('b')], { ...base, barmode: 'group', bargap: 0.25, xaxis: { type: 'category' } }, cfg);
+}
+
+// ---------------------------------------------------------------- downloads, sharing, printing
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function downloadSeries() {
+  const R = S.result;
+  download(`trend_detective_${R.var_id}_${R.years[0]}_${R.years[1]}.csv`,
+    [`month,${R.var_id}`].concat(R.series.month.map((m, i) => `${m},${R.series.value[i] ?? ''}`)).join('\n'), 'text/csv');
+}
+
+function downloadCells() {
+  const R = S.result, cols = ['lat', 'lon', 'slope_decade', 'pct_decade', 'p_ttest', 'p_mk', 'q_fdr', 'significant'];
+  if (!R.zones || !R.zones.length) return flash('Per-cell trends need at least two land cells.');
+  download(`trend_detective_${R.var_id}_cells.csv`, [cols.join(',')].concat(R.zones.map((z) => cols.map((c) => z[c] ?? '').join(','))).join('\n'), 'text/csv');
+}
+
+function downloadCase() {
+  const R = S.result, { figures, ...rest } = R;   // figures are drawings of the same numbers
+  const strip = (o) => { if (!o) return null; const { figure, ...x } = o; return x; };
+  download(`trend_detective_${R.var_id}_case.json`, JSON.stringify({
+    app: 'Trend Detective', generated: new Date().toISOString(), link: location.href,
+    request: { points: [...S.picked.values()], var_id: R.var_id, years: R.years },
+    result: rest, cross_check: S.cross && S.cross.status === 'ok' ? strip(S.cross.data) : null,
+    seasons: S.seasons && S.seasons.status === 'ok' ? S.seasons.data : null,
+  }, null, 1), 'application/json');
+}
+
+// The case lives in the URL hash, so a link reopens it: cells, years, question, level of detail, screen.
+function updateHash() {
+  const parts = [];
+  if (S.picked.size) parts.push('p=' + [...S.picked.values()].map(([lat, lon]) => `${+lat.toFixed(4)},${+lon.toFixed(4)}`).join(';'));
+  if (S.years[0] !== S.meta.years[0] || S.years[1] !== S.meta.years[1]) parts.push(`y=${S.years[0]}-${S.years[1]}`);
+  const { primary } = chosenVars();
+  if ((S.picked.size || S.cmp) && primary) { parts.push('v=' + primary); if (!S.variable && S.question) parts.push('q=' + S.question); }
+  if (S.ui === 'expert') parts.push('m=expert');
+  if (S.cmp) parts.push('ca=' + S.cmp.a.cells.map(([lat, lon]) => `${+lat.toFixed(4)},${+lon.toFixed(4)}`).join(';'), 'cn=' + encodeURIComponent(S.cmp.a.name));
+  if (S.screen === 'verdict') parts.push('s=v');
+  if (S.screen === 'compare') parts.push('s=c');
+  ownHash = parts.length ? '#' + parts.join('&') : '';
+  try { history.replaceState(null, '', ownHash || location.pathname); } catch (_) { /* sandboxed frame */ }
+}
+// A link pasted into a tab that already shows the app only changes the hash: reopen that case.
+let ownHash = location.hash;
+window.addEventListener('hashchange', () => { if (location.hash !== ownHash) location.reload(); });
+
+function restoreFromHash() {
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  if (h.get('m') === 'expert' || h.get('m') === 'simple') S.ui = h.get('m');
+  const cellsOf = (key) => (h.get(key) || '').split(';').map((x) => x.split(',').map(Number))
+    .filter((c) => c.length === 2 && c.every(Number.isFinite) && Math.abs(c[0]) <= 90 && Math.abs(c[1]) <= 180)
+    .slice(0, S.meta.max_points).map(([lat, lon]) => snap(lat, lon));
+  const cells = cellsOf('p'), ca = cellsOf('ca');
+  if (!cells.length && !ca.length) return false;
+  const y = (h.get('y') || '').split('-').map(Number);
+  if (y.length === 2 && y[0] >= S.meta.years[0] && y[1] <= S.meta.years[1] && y[1] - y[0] + 1 >= S.meta.min_years) S.years = y;
+  S.picked = new Map(cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
+  S.widened = true;
+  if (h.get('v') && S.meta.variables[h.get('v')]) { S.variable = h.get('v'); S.userChose = true; S.restoreQ = h.get('q'); }
+  if (ca.length && S.variable) {
+    S.cmp = { a: { name: (h.get('cn') || 'Place A').slice(0, 60), cells: ca, var_id: S.variable, years: [...S.years] } };
+    S.restoreCompare = h.get('s') === 'c' && cells.length > 0;
+  }
+  map.fitBounds(L.latLngBounds(cells.concat(ca)).pad(0.6), { ...mapPadding(), maxZoom: 8, animate: false });
+  return h.get('s') === 'v' && !!S.variable && !S.cmp;
+}
+
+function share() {
+  updateHash();
+  const done = () => flash('Link copied: it reopens this case');
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(location.href).then(done, () => flash('Copy the link from the address bar'));
+  else flash('Copy the link from the address bar');
+}
+
+window.addEventListener('beforeprint', () => document.querySelectorAll('#panel details.more').forEach((el) => { el.open = true; }));
+
+// ---------------------------------------------------------------- place search (bundled list, no third party)
+const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[’']/g, '').toLowerCase();
+const search = { items: [], active: -1 };
+
+function searchRender() {
+  const input = $('place'), box = $('place-results');
+  const q = norm(input.value.trim());
+  const all = window.TD_PLACES || [];
+  const hits = q ? all.filter((p) => norm(p[0]).startsWith(q)).concat(all.filter((p) => !norm(p[0]).startsWith(q) && (norm(p[0]).includes(q) || norm(p[1]).split(/[ ·]+/).some((w) => w.startsWith(q))))) : all.slice(0, 8);
+  search.items = hits.slice(0, 8);
+  if (search.active >= search.items.length) search.active = search.items.length - 1;
+  box.innerHTML = search.items.length
+    ? search.items.map((p, i) => `<button type="button" class="result" role="option" id="place-${i}" data-i="${i}" aria-selected="${i === search.active}"><span>${esc(p[0])}</span><small>${esc(p[1])}</small></button>`).join('')
+    : '<p class="none">No match in the built-in list. Move the map there instead.</p>';
+  box.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  if (search.active >= 0) input.setAttribute('aria-activedescendant', `place-${search.active}`); else input.removeAttribute('aria-activedescendant');
+}
+
+function searchClose() { $('place-results').hidden = true; $('place').setAttribute('aria-expanded', 'false'); search.active = -1; }
+
+function goToPlace(p, investigateNow) {
+  S.place = { name: p[0], lat: p[2], lon: p[3] }; S.placeFresh = true;
+  $('place').value = p[0];
+  searchClose();
+  if (S.screen !== 'pick') backToPick();
+  if (investigateNow) return selectAround(S.place);
+  const target = L.latLng(p[2], p[3]);
+  const shift = phone() ? [0, window.innerHeight * 0.2] : [220, 0];      // keep the place clear of the panel
+  const centre = map.unproject(map.project(target, 7).add(shift), 7);
+  if (reduceMotion || document.hidden) map.setView(centre, 7, { animate: false }); else map.flyTo(centre, 7, { duration: 1.1 });
+  updateHint();
+}
+
+$('place').addEventListener('input', () => { search.active = -1; searchRender(); });
+$('place').addEventListener('focus', searchRender);
+$('place').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const n = search.items.length;
+    if (n) { search.active = (search.active + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; searchRender(); }
+  } else if (e.key === 'Enter') {
+    const p = search.items[Math.max(search.active, 0)];
+    if (p) goToPlace(p);
+  } else if (e.key === 'Escape') { searchClose(); e.target.blur(); }
+});
+$('place-results').addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) goToPlace(search.items[+b.dataset.i]); });
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.search')) searchClose(); });
+$('hint-action').addEventListener('click', () => { if (S.place) selectAround(S.place); });
+
+// ---------------------------------------------------------------- first-run welcome: example, your location, or explore
+function showWelcome() {
+  const el = $('coach');
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="welcome-logo" aria-hidden="true">
+      <svg><use href="#logo"/></svg>
+    </div>
+    <p class="t-body" style="color:var(--char)">45 years of NASA data. Pick any area on Earth. Find out if the climate is changing there.</p>
+    <div class="row stack tight" style="gap:8px;margin-top:4px">
+      <button type="button" class="btn wide" data-welcome="example">${ic('play')} Watch an example: Tunis</button>
+      <button type="button" class="btn wide quiet" data-welcome="location">${ic('pin')} Use my location</button>
+      <button type="button" class="link" style="text-align:center" data-welcome="skip">Explore yourself</button>
+    </div>`;
+}
+$('coach').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-welcome]');
+  if (!b) return;
+  $('coach').hidden = true;
+  pref.set('coach', 'done');
+  if (b.dataset.welcome === 'example') runExample();
+  else if (b.dataset.welcome === 'location') runDemo();
+});
+
+// ---------------------------------------------------------------- Data & math window
+// A guided tour in six steps, one on screen at a time: a question, a plain answer, a sketch, then the formula.
+// Every formula card names each of its symbols and, when a case is open, shows that case's own numbers.
+const AB = { step: 0, sub: [0, 0, 0, 0, 0, 0] };
+const AB_STEPS = ['The data', 'One series', 'The trend', 'Luck?', 'The verdict', 'Maps & more'];
+
+const sym = (s, sub) => `<i>${s}</i>${sub ? `<sub>${sub}</sub>` : ''}`;
+const pEq = (p) => (p === null || p === undefined ? 'p unknown' : p < 0.001 ? 'p &lt; 0.001' : `p = ${p.toFixed(3)}`);
+const rnd = (i) => { const x = Math.sin(i * 12.9898) * 43758.5453; return x - Math.floor(x) - 0.5; };   // fixed wiggle for the sketches
+
+// yours: a string = the open case's numbers; null = no case open yet (shows a hint); undefined = nothing to show.
+function fxCard({ f, where, plain, yours }) {
+  return `<div class="fx">
+    <div class="fx-f">${f}</div>
+    <dl class="fx-w">${where.map(([s, def]) => `<dt>${s}</dt><dd>${def}</dd>`).join('')}</dl>
+    ${plain ? `<p class="fx-p"><strong>In plain words.</strong> ${plain}</p>` : ''}
+    ${yours ? `<p class="fx-y">${ic('pin', 's')}<span><strong>Your case.</strong> ${yours}</span></p>`
+      : yours === null ? `<p class="fx-y soft">${ic('pin', 's')}<span>Investigate a place and its own numbers appear here.</span></p>` : ''}
+  </div>`;
+}
+const abSeg = (labels) => `<div class="seg ab-seg" role="group" aria-label="Choose what to read">${labels.map((l, i) =>
+  `<button type="button" data-sub="${i}" aria-pressed="${AB.sub[AB.step] === i}">${l}</button>`).join('')}</div>`;
+
+// The case on screen, if any: its numbers are the app's own results, nothing is recomputed here.
+function abCase() {
+  const R = S.result;
+  if (!R || !R.res) return null;
+  const v = R.variable;
+  return { R, r: R.res, v, d: v.decimals ?? 2, u: v.units ? ` ${esc(v.units)}` : '' };
+}
+
+function sketchSeasons() {
+  const n = 60, pts = (x0, f) => Array.from({ length: n }, (_, i) => `${(x0 + (i / (n - 1)) * 200).toFixed(1)},${f(i).toFixed(1)}`).join(' ');
+  const raw = pts(8, (i) => 50 - 25 * Math.sin((2 * Math.PI * i) / 12) - 0.15 * i + 8 * rnd(i));
+  const ano = pts(312, (i) => 62 - 0.32 * i + 15 * rnd(i));
+  return `<figure class="sk"><svg viewBox="0 0 520 96" role="img" aria-label="Sketch: a wavy seasonal line becomes a flatter line of anomalies">
+    <polyline points="${raw}" class="sk-line grey"/>
+    <path d="M222 46h70M284 40l8 6-8 6" class="sk-arrow"/>
+    <text x="257" y="34" text-anchor="middle">minus the</text><text x="257" y="66" text-anchor="middle">usual month</text>
+    <line x1="312" x2="512" y1="53" y2="53" class="sk-zero"/>
+    <polyline points="${ano}" class="sk-line teal"/>
+  </svg><figcaption><span>Raw months: the seasons hide everything</span><span>Anomalies: only the unusual part is left</span></figcaption></figure>`;
+}
+
+function sketchTrend() {
+  const dots = Array.from({ length: 40 }, (_, i) => `<circle cx="${20 + i * 12}" cy="${(82 - 1.3 * i + 22 * rnd(i + 7)).toFixed(1)}" r="2.3"/>`).join('');
+  return `<figure class="sk"><svg viewBox="0 0 520 114" role="img" aria-label="Sketch: a straight line through scattered dots, and its rise over ten years">
+    <g class="sk-dots">${dots}</g>
+    <line x1="20" y1="82" x2="488" y2="31.3" class="sk-line teal"/>
+    <path d="M200 62.5h120" class="sk-zero"/><path d="M320 62.5V49.5" class="sk-rise"/>
+    <text x="260" y="109" text-anchor="middle">over 10 years (dashes), the line rises by the red step: the rate per decade</text>
+  </svg><figcaption><span>Each dot is one month's anomaly. The line is the trend.</span></figcaption></figure>`;
+}
+
+function sketchRange() {
+  const row = (y, x0, x1, label) => `<line x1="170" x2="508" y1="${y}" y2="${y}" class="sk-axis"/>
+    <rect x="${x0}" y="${y - 6}" width="${x1 - x0}" height="12" rx="6" class="sk-band"/><rect x="${(x0 + x1) / 2 - 2}" y="${y - 9}" width="4" height="18" rx="2" class="sk-est"/>
+    <text x="8" y="${y + 4}">${label}</text>`;
+  return `<figure class="sk"><svg viewBox="0 0 520 98" role="img" aria-label="Sketch: a range that stays clear of zero, and one that includes zero">
+    ${row(22, 318, 452, 'Clear of zero: a real trend')}${row(56, 214, 348, 'Touches zero: maybe nothing')}
+    <line x1="262" x2="262" y1="4" y2="76" class="sk-zero"/><text x="262" y="92" text-anchor="middle">0 = no change</text>
+  </svg><figcaption><span>The band is the 95% range of the rate; the dark mark is the best estimate.</span></figcaption></figure>`;
+}
+
+// ------------------------------------------------ the six steps: each returns {q, lead, body}
+function abStep1(meta) {
+  const [y0, y1] = meta.years, C = abCase(), sub = AB.sub[0];
+  const vars = Object.entries(meta.variables).map(([id, v]) =>
+    `<li${C && C.R.var_id === id ? ' class="on"' : ''}><strong>${esc(v.name)}</strong><span class="unit">${esc(v.units || '')}</span><p>${esc(v.definition || '')}</p></li>`).join('');
+  const panels = [
+    `<ul class="ab-vars">${vars}</ul>${C ? '<p class="t-cap">The highlighted one is the variable of the case on screen.</p>' : ''}`,
+    `<p class="t-body">Over open water NASA POWER reports topsoil that is permanently soaked (wetness stuck at 1.0) or gives no soil value at all.
+      Cells like that are sea, so the app leaves them out: a "climate trend on land" should not be an average of waves.</p>
+     <p class="t-body">Two more house rules: a month with no value stays empty (nothing is invented to fill it), and the app refuses to
+      analyse fewer than 60 months, because a few years cannot show a climate trend.</p>`,
+    `<p class="t-body">One source can be wrong, so for temperature and rain the app asks a second NASA record the same question,
+      through NASA Giovanni:</p>
+     <ul class="ab-list"><li><strong>AIRS</strong>: an infrared instrument on the Aqua satellite, measuring temperature from space since 2002.</li>
+      <li><strong>GPM IMERG</strong>: rainfall from many satellites combined with rain gauges on the ground.</li></ul>
+     <p class="t-cap">Fair warning: they are not perfect strangers. MERRA-2 also uses AIRS readings, and its rain is corrected with gauges too.
+      But they are built by different teams with different methods, so agreement between them still means something.</p>`,
+  ];
+  return {
+    q: 'Where do the numbers come from?',
+    lead: `From NASA. Satellites, weather stations and balloons measure the real atmosphere. A NASA computer model called <strong>MERRA-2</strong>
+      blends all of them into one complete picture of the weather, month by month, since ${y0}. It is the best reconstruction we have,
+      but remember: it is a careful model, not one thermometer in your street.`,
+    body: `<div class="ab-flow" aria-label="From measurements to your area">
+        <div class="ab-srcs"><span>Satellites</span><span>Weather stations</span><span>Balloons</span></div><i>→</i>
+        <div class="ab-node"><strong>MERRA-2</strong><small>blends them</small></div><i>→</i>
+        <div class="ab-node"><span class="ab-grid" aria-hidden="true">${'<b></b>'.repeat(12)}</span><small>a grid of cells</small></div><i>→</i>
+        <div class="ab-node teal"><strong>Your area</strong><small>via NASA POWER</small></div>
+      </div>
+      <div class="ab-facts">
+        <div><strong class="num">${y0}–${y1}</strong><span>every single month</span></div>
+        <div><strong class="num">≈ 55 km</strong><span>height of one cell (0.5° × 0.625°)</span></div>
+        <div><strong class="num">${meta.max_points || 30}</strong><span>cells at most, land only</span></div>
+      </div>
+      ${abSeg(['What it measures', 'Land or sea?', 'A second opinion'])}${panels[sub]}`,
+  };
+}
+
+function abStep2() {
+  const C = abCase(), sub = AB.sub[1];
+  const cards = [
+    fxCard({
+      f: `<span class="ol">${sym('x')}</span><sub>t</sub> = ( Σ<sub>i</sub> ${sym('w', 'i')} · ${sym('x', 'i,t')} ) ⁄ ( Σ<sub>i</sub> ${sym('w', 'i')} )`,
+      where: [
+        [`<span class="ol">${sym('x')}</span><sub>t</sub>`, 'the value for your whole area in month <i>t</i> (what we want)'],
+        [sym('x', 'i,t'), 'the value of cell number <i>i</i> in that same month'],
+        [sym('w', 'i'), 'the weight of cell <i>i</i> = cos(its latitude). It is 1 at the equator and shrinks towards the poles'],
+        ['Σ<sub>i</sub>', '"add up over every land cell <i>i</i> you picked"'],
+      ],
+      plain: 'It is a fair average. Every cell gets a vote, but cells far from the equator are narrower on the ground, so their vote counts a little less. A cell with no value that month simply does not vote.',
+      yours: C ? `${plural(C.R.points_used, 'land cell')} averaged${C.R.points.length > C.R.points_used ? `; ${plural(C.R.points.length - C.R.points_used, 'sea cell')} left out` : ''}.` : null,
+    }),
+    fxCard({
+      f: `${sym('a', 't')} = ${sym('x', 't')} − ${sym('m', 'month(t)')}`,
+      where: [
+        [sym('a', 't'), 'the <strong>anomaly</strong> of month <i>t</i>: how unusual that month was'],
+        [sym('x', 't'), 'the area value that month (from the first formula)'],
+        [sym('m', 'month(t)'), 'the usual value for that calendar month: the average of every January for a January, every July for a July…'],
+      ],
+      plain: 'Compare each July with a normal July, and each January with a normal January. Summer is always hotter than winter, and that tells us nothing; what matters is whether this July was hotter than Julys usually are.',
+      yours: C ? `${C.r.n_months} monthly anomalies, from ${esc(C.r.start)} to ${esc(C.r.end)}${C.r.missing_months ? ` (${plural(C.r.missing_months, 'month')} missing and left empty)` : ''}.` : null,
+    }),
+  ];
+  return {
+    q: 'How do many cells become one line?',
+    lead: 'Your area covers several grid cells, and every place on Earth has seasons. Two small steps deal with both, and everything after this page works on the result.',
+    body: `${sketchSeasons()}${abSeg(['1 · Average the cells', '2 · Remove the seasons'])}${cards[sub]}`,
+  };
+}
+
+function abStep3() {
+  const C = abCase(), sub = AB.sub[2];
+  const cards = [
+    fxCard({
+      f: `${sym('a', 't')} = ${sym('α')} + ${sym('β')} · ${sym('t')} + ${sym('ε', 't')}&emsp;→&emsp;rate per decade = 10 · ${sym('β')}`,
+      where: [
+        [sym('a', 't'), 'the anomaly of month <i>t</i> (step 2)'],
+        [sym('t'), 'the date of that month, counted in years (March 2000 = 2000.17)'],
+        [sym('α'), 'where the line starts: its height at year zero. Only there to position the line'],
+        [sym('β'), 'the <strong>slope</strong>: how much the line climbs (or drops) each year. This is the number we are after'],
+        [sym('ε', 't'), 'the leftover: how far that month sits above or below the line'],
+        ['10 · <i>β</i>', 'ten years of slope = the "per decade" rate shown on the dashboard'],
+      ],
+      plain: 'Lay a ruler across the cloud of dots so that it passes as close as possible to all of them (it makes the leftovers, squared and added up, as small as they can be). How steep the ruler is tells you how fast things change.',
+      yours: C ? `The line gives <strong class="num">${fmt(C.r.slope_decade, C.d)}${C.u} per decade</strong>.` : null,
+    }),
+    fxCard({
+      f: `Sen's slope = 10 · median<sub>i&lt;j</sub> [ ( ${sym('a', 'j')} − ${sym('a', 'i')} ) ⁄ ( ${sym('t', 'j')} − ${sym('t', 'i')} ) ]`,
+      where: [
+        [`${sym('a', 'i')}, ${sym('a', 'j')}`, 'the anomalies of two different months: <i>i</i> is the earlier one, <i>j</i> the later one'],
+        [`${sym('t', 'i')}, ${sym('t', 'j')}`, 'the dates of those two months, in years'],
+        ['( … ) ⁄ ( … )', 'the slope between that one pair: change in value divided by time between them'],
+        ['median<sub>i&lt;j</sub>', 'do this for <em>every</em> possible pair, sort all the slopes, and keep the middle one'],
+        ['10 ·', 'turns "per year" into "per decade"'],
+      ],
+      plain: 'Ask every pair of months "how fast did things change between you two?", line up all the answers from smallest to largest, and take the one in the middle. One freak heatwave can pull a ruler, but it cannot move the middle of thousands of answers.',
+      yours: C ? `Sen's slope is <strong class="num">${fmt(C.r.sen_decade, C.d)}${C.u} per decade</strong>, ${C.r.tests_agree ? 'the same direction as the line' : 'not the same direction as the line, so the app will not call this trend clear'}.` : null,
+    }),
+    fxCard({
+      f: `total change = rate × ${sym('Y')} ⁄ 10&emsp;·&emsp;share = rate ⁄ <span class="ol">${sym('x')}</span> × 100`,
+      where: [
+        ['rate', 'the rate per decade from the straight line'],
+        [sym('Y'), 'the length of the record in years (months ÷ 12)'],
+        ['total change', 'how far the trend line moved from the first month to the last'],
+        [`<span class="ol">${sym('x')}</span>`, 'the long-term average of the raw values (not the anomalies)'],
+        ['share', 'the rate as a percentage of that average, per decade. Shown only for things with a true zero, like rain, snow or soil wetness'],
+      ],
+      plain: 'The total is the change along the trend line. It is <em>not</em> "last year minus first year", which would depend on whether those two years happened to be odd. The share lets a desert and a rainforest be compared fairly: losing 5 mm matters more where it rarely rains.',
+      yours: C ? `${fmt(C.r.slope_decade, C.d + 1)} × ${C.r.span_years.toFixed(1)} ÷ 10 = <strong class="num">${fmt(C.r.total_change, C.d)}${C.u}</strong> over the record${C.r.pct_decade !== null && C.r.pct_decade !== undefined ? `; that rate is ${fmt(C.r.pct_decade, 1)}% of the average per decade` : ''}.` : null,
+    }),
+  ];
+  return {
+    q: 'How fast is it changing?',
+    lead: 'The app measures the speed in two different ways. One is precise but can be pulled by a few freak months; the other is harder to fool. A trend is only called clear when both point the same way.',
+    body: `${sketchTrend()}${abSeg(['The straight line', 'The middle slope', 'The headline numbers'])}${cards[sub]}`,
+  };
+}
+
+function abStep4() {
+  const C = abCase(), sub = AB.sub[3];
+  const ci = C && C.r.ci_decade;
+  const cards = [
+    fxCard({
+      f: `${sym('t')} = ${sym('β')} ⁄ se(${sym('β')})&emsp;·&emsp;95% range = ( ${sym('β')} ± 1.96 · se(${sym('β')}) ) × 10`,
+      where: [
+        [sym('β'), 'the slope of the straight line (step 3), per year'],
+        [`se(${sym('β')})`, 'the <strong>standard error</strong>: how much the slope could wobble just because the months are noisy'],
+        [sym('t'), 'how many wobbles the slope stands away from zero. Far from zero = hard to explain by luck'],
+        ['1.96', 'the bell-curve number that fences in 95% of what luck produces'],
+        ['× 10', 'per year → per decade'],
+      ],
+      plain: 'If a slope is many times bigger than its own wobble, luck is a poor explanation. The 95% range says where the true rate probably lies; if zero is inside it, "no change at all" is still a reasonable answer.',
+      yours: C ? `${pEq(C.r.p_ttest)}; the 95% range runs from ${fmt(ci[0], C.d)} to ${fmt(ci[1], C.d)}${C.u} per decade and ${ci[0] <= 0 && ci[1] >= 0 ? 'includes zero' : 'stays clear of zero'}.` : null,
+    }),
+    fxCard({
+      f: `${sym('S')} = Σ<sub>i&lt;j</sub> sgn( ${sym('a', 'j')} − ${sym('a', 'i')} )&emsp;·&emsp;${sym('Z')} = ( ${sym('S')} − sgn ${sym('S')} ) ⁄ √Var*(${sym('S')})`,
+      where: [
+        [`${sym('a', 'i')}, ${sym('a', 'j')}`, 'the anomalies of an earlier month <i>i</i> and a later month <i>j</i>'],
+        ['sgn( … )', 'just the sign: +1 if the later month is higher, −1 if it is lower, 0 if they tie'],
+        ['Σ<sub>i&lt;j</sub>', 'add that up over every pair of months'],
+        [sym('S'), 'the final score: wins minus losses. Near zero = no direction; large = the later months keep winning'],
+        [`Var*(${sym('S')})`, `how widely <i>S</i> would scatter by pure luck: ${sym('n')}(${sym('n')}−1)(2${sym('n')}+5) ⁄ 18, multiplied by ${sym('n')} ⁄ ${sym('n')}* (see "month memory")`],
+        [`${sym('n')}, ${sym('n')}*`, 'the number of months, and the smaller number of months that are truly independent'],
+        [sym('Z'), 'the score measured in units of luck. Like <i>t</i>, far from zero means hard to blame on chance'],
+      ],
+      plain: 'Judge a race by finishing order only. For every pair of months, ask: did the later one come out higher? If "yes" wins far more often than a coin toss would, something is rising. No ruler and no bell curve are assumed, so odd-shaped data cannot trick it.',
+      yours: C ? `${pEq(C.r.p_mk)}${C.r.mk_fallback ? ' (the back-up version of the test was used, see "month memory")' : ''}.` : null,
+    }),
+    `<div class="fx"><p class="t-body"><strong>Months have a memory.</strong> A warm month tends to follow a warm month, because oceans and soils change slowly.
+      So the months are not all independent pieces of evidence; they repeat each other a little. A test that ignores this becomes overconfident.</p>
+      <ul class="ab-list">
+        <li><strong>In the line test</strong>, the wobble se(<i>β</i>) is computed the <em>Newey–West</em> way, which counts how much each month resembles its neighbours up to 12 months back and widens the wobble to match.</li>
+        <li><strong>In the ranking test</strong>, the <em>Hamed–Rao</em> factor <i>n</i> ⁄ <i>n</i>* replaces the number of months by the smaller number that are effectively independent.</li>
+        <li><strong>Back-up</strong>: on a few stubborn series that factor cannot be computed. The app then removes each month's echo of the month before ("pre-whitening") and tests again, and it tells you it did so.</li>
+      </ul></div>`,
+  ];
+  return {
+    q: 'Could it just be luck?',
+    lead: `Weather bounces around, so a rise could be a lucky streak, like five heads in a row. Each test answers one question:
+      <strong>if nothing were really changing, how often would chance alone draw a trend this strong?</strong> That chance is called
+      <strong><i>p</i></strong>. A small <i>p</i> (under 0.05, or 5%) means luck is a poor excuse.`,
+    body: `${sketchRange()}${abSeg(['Test 1 · the line', 'Test 2 · the ranking', 'Month memory'])}${cards[sub]}`,
+  };
+}
+
+function abStep5() {
+  const C = abCase(), sub = AB.sub[4];
+  const tier = C && C.r.tier, mine = '<span class="ab-you">your case</span>';
+  const yts = C && C.r.years_to_significance;
+  const panels = [
+    `<div class="fx"><p class="t-body">The two tests fail in different ways. The line test can be fooled by a few extreme months; the ranking test
+      ignores how big a change is and only looks at order. For a false alarm, <strong>both</strong> would have to be fooled at once,
+      and the two speeds from step 3 would also have to agree. That is a much harder accident than fooling one test.</p></div>`,
+    fxCard({
+      f: `months needed ≈ ${sym('n')} · ( 1.96 ⁄ |${sym('t')}| )<sup>2/3</sup>`,
+      where: [
+        [sym('n'), 'the number of months in the record today'],
+        [`|${sym('t')}|`, 'the size of <i>t</i> from the line test (step 4), ignoring its sign'],
+        ['1.96', 'the value <i>t</i> must reach to pass the 5% test'],
+        ['<sup>2/3</sup>', 'if the trend and the noise stay the same, <i>t</i> grows like <i>n</i><sup>3/2</sup> as the record gets longer; the power 2/3 undoes that'],
+        ['months needed', 'take away <i>n</i> and divide by 12 to get "more years of data"'],
+      ],
+      plain: 'A weak trend is not a "no". It often just needs more time to stand out from the noise. This estimates how much more, assuming things keep going as they are.',
+      yours: !C ? null : tier === 'significant' ? 'Already clear: no more data needed.'
+        : yts === null || yts === undefined ? 'The line is completely flat, so no amount of extra data would help.'
+        : yts > 50 ? 'More than 50 years at this rate, so the app does not show an estimate.' : `About ${Math.round(yts)} more years of data at this rate.`,
+    }),
+    `<div class="fx"><p class="t-body">A straight line can mislead. A record that sits flat for 40 years and then jumps gives the same
+      "rate per decade" as one that climbs steadily, yet the stories are very different.</p>
+      <p class="t-body">So the app repeats the whole analysis on the record <strong>up to the end of the last full decade</strong>. If the full record
+      shows a trend but that earlier part shows none, the dashboard adds: "Most of this change came recently."</p>
+      ${C ? `<p class="fx-y">${ic('pin', 's')}<span><strong>Your case.</strong> ${C.R.recent ? esc(C.R.recent.text) : 'No such warning here: the trend does not rest on the latest years alone, or there is no clear trend to check.'}</span></p>` : ''}</div>`,
+  ];
+  return {
+    q: 'What does the app finally say?',
+    lead: 'One rule, the same for every place and every variable. It uses the two <i>p</i> values from step 4 and the two speeds from step 3.',
+    body: `<ol class="ab-ladder">
+        <li${tier === 'significant' ? ' class="on"' : ''}><span class="status up">${ic('up')}Clearly rising or falling</span>
+          <span>Both tests give <i>p</i> &lt; 0.05 <strong>and</strong> both speeds point the same way. ${tier === 'significant' ? mine : ''}</span></li>
+        <li${tier === 'suggestive' ? ' class="on"' : ''}><span class="status up maybe">${ic('up')}Possibly rising or falling</span>
+          <span>Not the above, but at least one test gives <i>p</i> &lt; 0.10. A hint, not a proof. ${tier === 'suggestive' ? mine : ''}</span></li>
+        <li${tier === 'none' ? ' class="on"' : ''}><span class="status flat">${ic('flat')}No clear change yet</span>
+          <span>Neither test gets below 0.10. The ups and downs could be natural. ${tier === 'none' ? mine : ''}</span></li>
+      </ol>
+      ${abSeg(['Why two tests?', 'How long until we are sure?', 'Is the change recent?'])}${panels[sub]}`,
+  };
+}
+
+function abStep6() {
+  const C = abCase(), sub = AB.sub[5];
+  const z = C && C.R.zones;
+  const tiles = [['layers', 'Zone map', 'Which cells change?'], ['hill', 'Groups', 'Which cells change alike?'],
+    ['check', 'Second opinion', 'Does another dataset agree?'], ['compare', 'Two places', 'Which changes faster?']];
+  const panels = [
+    `<p class="t-body">Buy 20 lottery tickets and one may win by luck. Test 20 cells at the 5% level and about one will "pass" by luck too.
+      So on the map the bar rises with the number of cells. Each cell enters with the <em>larger</em> of its two <i>p</i> values:</p>
+     ${fxCard({
+      f: `keep the cells with ${sym('p', '(k)')} ≤ ( ${sym('k')} ⁄ ${sym('m')} ) · 0.10`,
+      where: [
+        [sym('m'), 'the number of cells tested'],
+        [sym('p', '(k)'), 'the <i>k</i>-th smallest <i>p</i> value when all cells are sorted from strongest evidence to weakest'],
+        [sym('k'), 'its position in that sorted list: 1 for the best cell, 2 for the next…'],
+        ['0.10', 'the share of false alarms we accept among the cells that get a dot: at most 10%'],
+      ],
+      plain: 'The best cell must beat a very strict bar, the next one a slightly easier bar, and so on. A cell that passes gets a dot on the map (and its two speeds must agree in direction). This is the Benjamini–Hochberg rule; the "q-value" in the tooltips is each cell\'s score on it.',
+      yours: !C ? null : z && z.length ? `${z.filter((x) => x.significant).length} of ${plural(z.length, 'cell')} keep a clear trend after this correction.` : 'This case has too few land cells for a zone map.',
+    })}`,
+    `<div class="fx"><p class="t-body">Every cell gets a <strong>fingerprint</strong>: its rate per decade for three variables (temperature, rain, and a third
+      one chosen for the local climate). Each variable is rescaled so that none dominates just because its numbers are bigger.</p>
+      <p class="t-body">Then the two most similar fingerprints are joined, then the next two, and so on, like sorting socks into piles
+      (this is called Ward linkage). Cells in one pile share a colour.</p>
+      <p class="t-cap">A group is a description, not a test. It says "these cells change alike", never "this change is real"; that judgement stays with the zone map.</p></div>`,
+    `<div class="fx"><p class="t-body">The second NASA record (step 1) goes through exactly the same tests. Then:</p>
+      <ol class="ab-ladder small">
+        <li><span class="status"><strong>They agree</strong></span><span>Both lean the same way, and both are at least "possibly".</span></li>
+        <li><span class="status"><strong>They disagree</strong></span><span>They lean opposite ways, and at least one of them is "clearly".</span></li>
+        <li><span class="status"><strong>One source only</strong></span><span>Anything weaker. The app then makes no claim about agreement.</span></li>
+      </ol></div>`,
+    `<p class="t-body">Each place is tested on its own record, against its own usual climate. One is called <strong>faster</strong> only when the two
+      95% ranges (step 4) do not overlap; a smaller gap could be luck, and the app says "similar". When two <em>variables</em> are compared, it reports how closely they move together:</p>
+     ${fxCard({
+      f: `${sym('r')} = Σ<sub>t</sub> ( ${sym('a', 't')} − <span class="ol">${sym('a')}</span> )( ${sym('b', 't')} − <span class="ol">${sym('b')}</span> ) ⁄ √[ Σ<sub>t</sub> ( ${sym('a', 't')} − <span class="ol">${sym('a')}</span> )² · Σ<sub>t</sub> ( ${sym('b', 't')} − <span class="ol">${sym('b')}</span> )² ]`,
+      where: [
+        [`${sym('a', 't')}, ${sym('b', 't')}`, 'the anomalies of the two variables in the same month <i>t</i>'],
+        [`<span class="ol">${sym('a')}</span>, <span class="ol">${sym('b')}</span>`, 'the average anomaly of each variable over the months they share'],
+        ['Σ<sub>t</sub>', 'add up over every month both variables have'],
+        [sym('r'), 'the correlation, from −1 to +1: +1 = they always rise together, −1 = one rises when the other falls, 0 = no link'],
+      ],
+      plain: 'When one variable is above its usual value, is the other one too? Moving together is <em>consistent with</em> a connection, but it is never proof that one causes the other.',
+    })}`,
+  ];
+  return {
+    q: 'And the maps and comparisons?',
+    lead: 'The same tests, put to work in four more ways. Pick one.',
+    body: `<div class="ab-tiles" role="group" aria-label="Topics">${tiles.map(([icon, name, teaser], i) =>
+      `<button type="button" data-sub="${i}" aria-pressed="${sub === i}">${ic(icon)}<strong>${name}</strong><small>${teaser}</small></button>`).join('')}</div>
+      ${panels[sub]}
+      <p class="t-cap">Method after Acker et al. (2009); ranking-test correction from Hamed &amp; Rao (1998); the map rule from Wilks (2016).
+        Climate is normally judged over 30 years or more (WMO).
+        <a class="link" href="/docs/validation.md" target="_blank" rel="noopener">How we checked the method</a></p>`,
+  };
+}
+
+function aboutHtml() {
+  const meta = S.meta || { years: [1981, 2025], max_points: 30, variables: {} };
+  const i = AB.step, last = AB_STEPS.length - 1;
+  const step = [abStep1, abStep2, abStep3, abStep4, abStep5, abStep6][i](meta);
+  const tabs = AB_STEPS.map((label, k) =>
+    `<button type="button" data-step="${k}" class="${k === i ? 'on' : k < i ? 'done' : ''}" ${k === i ? 'aria-current="step"' : ''}><b>${k + 1}</b><span>${label}</span></button>`).join('');
+  const C = abCase();
+  return `<div class="about-card" role="document">
+  <header class="ab-head">
+    <div class="row">
+      <div class="stack tight" style="gap:3px">
+        <h2 class="ab-title">The data &amp; the math</h2>
+        <p class="t-cap">How a verdict is made, in six small steps.${C ? ` Showing the numbers of your case: ${esc(C.v.name.toLowerCase())}, ${C.R.years[0]}–${C.R.years[1]}.` : ''}</p>
+      </div>
+      <button type="button" class="ab-close" data-ab="close" aria-label="Close">${ic('close', 's')}</button>
+    </div>
+    <nav class="ab-steps" aria-label="Steps">${tabs}</nav>
+  </header>
+  <div class="ab-body">
+    <div class="ab-step">
+      <p class="ab-kick">Step ${i + 1} of ${AB_STEPS.length}</p>
+      <h3 class="ab-q">${step.q}</h3>
+      <p class="ab-lead">${step.lead}</p>
+      ${step.body}
+    </div>
+  </div>
+  <footer class="ab-foot">
+    <button type="button" class="btn quiet" data-ab="prev" ${i === 0 ? 'disabled' : ''}>${ic('back', 's')}Back</button>
+    <span class="ab-dots" aria-hidden="true">${AB_STEPS.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</span>
+    ${i === last ? '<button type="button" class="btn" data-ab="close">Done</button>'
+      : `<button type="button" class="btn" data-ab="next">Next: ${AB_STEPS[i + 1]}${ic('next', 's')}</button>`}
+  </footer></div>`;
+}
+
+function renderAbout(focus) {
+  const el = $('about');
+  const keep = el.querySelector('.ab-body');
+  const top = focus === 'sub' && keep ? keep.scrollTop : 0;      // switching a tab inside a step keeps your place
+  el.innerHTML = aboutHtml();
+  el.querySelector('.ab-body').scrollTop = top;
+  const target = focus === 'sub' ? el.querySelector('[data-sub][aria-pressed="true"]')
+    : focus === 'step' ? el.querySelector('[data-ab="next"], .ab-foot [data-ab="close"]') : el.querySelector('.ab-close');
+  if (target) target.focus({ preventScroll: true });
+}
+
+function openAbout() { $('about').hidden = false; renderAbout(); }
+function closeAbout() { $('about').hidden = true; }
+function aboutGo(step) {
+  AB.step = Math.max(0, Math.min(AB_STEPS.length - 1, step));
+  renderAbout('step');
+}
+
+$('about').addEventListener('click', (e) => {
+  if (e.target === $('about')) return closeAbout();
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  if (b.dataset.ab === 'close') closeAbout();
+  else if (b.dataset.ab === 'prev') aboutGo(AB.step - 1);
+  else if (b.dataset.ab === 'next') aboutGo(AB.step + 1);
+  else if (b.dataset.step !== undefined) aboutGo(+b.dataset.step);
+  else if (b.dataset.sub !== undefined) { AB.sub[AB.step] = +b.dataset.sub; renderAbout('sub'); }
+});
+
+// ---------------------------------------------------------------- events (one delegated listener per kind)
+const ACTIONS = {
+  ui: (b) => { S.ui = b.dataset.ui; pref.set('ui', S.ui); renderPanel(); updateHash(); if (S.screen === 'verdict') updateHint(); },
+  back: () => { if (S.cmp) S.cmp.data = null; backToPick(); },
+  new: () => newCase(),
+  go: () => (S.cmp ? runCompare() : investigate()),
+  compare: () => startCompare(),
+  cswap: () => swapCompare(),
+  cend: () => newCase(),
+  q: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; renderPanel(); updateHash(); },
+  next: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; investigate(); },
+  tab: (b) => { S.tab = b.dataset.tab; if (S.tab === 'groups' && !S.groups) loadGroups(); renderPanel(); },
+  view: (b) => { S.view = b.dataset.view; patch('sec-tab', tabHtml()); drawCharts(); },
+  gview: (b) => { S.groupView = b.dataset.gview; patch('sec-tab', tabHtml()); drawCharts(); },
+  csv: () => downloadSeries(), cells: () => downloadCells(), json: () => downloadCase(),
+  print: () => window.print(),
+  share: () => share(),
+  about: (b) => {                // a link may open the window on a given step (data-step) and topic (data-sub)
+    if (b.dataset.step !== undefined) { AB.step = +b.dataset.step; AB.sub[AB.step] = +(b.dataset.sub || 0); }
+    openAbout();
+  },
+};
+$('panel').addEventListener('click', (e) => {
+  if (e.target.closest('.info')) return;
+  const b = e.target.closest('[data-act]');
+  if (!b || b.disabled) return;
+  const menu = b.closest('details.menu');
+  if (menu) menu.open = false;
+  ACTIONS[b.dataset.act](b);
+});
+$('panel').addEventListener('change', (e) => {
+  const kind = e.target.dataset.change, [first, last] = S.meta.years, min = S.meta.min_years;
+  if (kind === 'var') { S.variable = e.target.value || null; S.userChose = !!S.variable; if (!S.variable) adoptQuestion(); }
+  else if (kind === 'y0') { S.years[0] = +e.target.value; if (S.years[1] - S.years[0] + 1 < min) S.years[1] = Math.min(last, S.years[0] + min - 1); }
+  else if (kind === 'y1') { S.years[1] = +e.target.value; if (S.years[1] - S.years[0] + 1 < min) S.years[0] = Math.max(first, S.years[1] - min + 1); }
+  else return;
+  renderPanel(); renderPoints(); updateHash();
+  setTimeout(maybeScan, 0);
+});
+const hoverDecade = (e, on) => { const b = e.target.closest && e.target.closest('[data-hover="decade"]'); if (b) markYears(on ? b.dataset.y0 : null, b.dataset.y1); };
+$('panel').addEventListener('mouseover', (e) => hoverDecade(e, true));
+$('panel').addEventListener('mouseout', (e) => hoverDecade(e, false));
+$('panel').addEventListener('focusin', (e) => hoverDecade(e, true));
+$('panel').addEventListener('focusout', (e) => hoverDecade(e, false));
+
+$('tool-pan').addEventListener('click', () => setMode('pan'));
+$('tool-draw').addEventListener('click', () => setMode(S.mode === 'draw' ? 'pan' : 'draw'));
+$('tool-points').addEventListener('click', () => setMode(S.mode === 'points' ? 'pan' : 'points'));
+$('tool-undo').addEventListener('click', undo);
+$('tool-clear').addEventListener('click', () => {
+  if (S.screen !== 'pick' || !S.picked.size) return;
+  pushHistory();
+  S.picked.clear(); S.added.clear(); S.note = null; S.capped = false;
+  setLasso(null);
+  selectionChanged();
+});
+map.on('moveend', () => { if (S.mode === 'points') renderPoints(); });
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); }
+  if (e.key === 'Escape' && !$('about').hidden) { closeAbout(); return; }
+  if (!$('about').hidden && !typing && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) { aboutGo(AB.step + (e.key === 'ArrowRight' ? 1 : -1)); return; }
+  if (e.key === 'Escape' && S.mode === 'draw') { window.cancelLasso(); setMode('pan'); }
+});
+
+// ---------------------------------------------------------------- demo walkthrough: auto-playing guided cases
+
+let demoRunning = false, demoAbort = null;
+
+function demoWait(ms) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(resolve, ms);
+    demoAbort = () => { clearTimeout(id); reject(new Error('stopped')); };
+  });
+}
+
+function demoPoll(fn, interval, timeout) {
+  return new Promise((resolve, reject) => {
+    const end = Date.now() + timeout;
+    let id;
+    const check = () => {
+      if (fn()) { resolve(); return; }
+      if (Date.now() > end) { resolve(); return; }
+      id = setTimeout(check, interval);
+    };
+    demoAbort = () => { clearTimeout(id); reject(new Error('stopped')); };
+    check();
+  });
+}
+
+function demoOverlay(step, total, caption) {
+  let el = $('demo-bar');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'demo-bar';
+    document.body.appendChild(el);
+  }
+  const pips = Array.from({ length: total }, (_, i) =>
+    `<i class="demo-pip${i < step ? ' done' : ''}${i === step ? ' on' : ''}"></i>`).join('');
+  el.innerHTML = `<div class="demo-inner">
+    <span class="demo-pips">${pips}</span>
+    <span class="demo-cap">${esc(caption)}</span>
+    <button id="demo-stop" type="button" class="demo-stop">Stop demo</button>
+  </div>`;
+  el.hidden = false;
+  $('demo-stop').addEventListener('click', () => { if (demoAbort) demoAbort(); });
+}
+
+function demoHide() {
+  const el = $('demo-bar');
+  if (el) el.hidden = true;
+}
+
+async function runDemo() {
+  if (demoRunning) return;
+  demoRunning = true;
+  pref.set('coach', 'done');
+  $('coach').hidden = true;
+  try {
+    const keep = { variable: S.variable, question: S.question, userChose: S.userChose };
+    if (S.screen === 'verdict') { newCase(); Object.assign(S, keep); }
+    demoOverlay(0, 1, 'Finding your location…');
+    const here = await new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition((p) => resolve([p.coords.latitude, p.coords.longitude]), () => resolve(null), { timeout: 6000, maximumAge: 600000 });
+    });
+    const c0 = map.getCenter(), [lat, lon] = here || [c0.lat, c0.lng];
+    demoOverlay(0, 1, here ? 'Selecting the area around you…' : 'Selecting the area in the middle of the map…');
+    S.place = { name: 'this area', lat, lon };
+    selectAround(S.place, 0.6);
+    await demoPoll(() => S.climate !== null, 300, 15000);
+    const qLabel = S.variable ? S.meta.variables[S.variable].name
+      : (S.questions.find((q) => q.id === S.question) || {}).label || 'climate trend here';
+    if (!keep.userChose && !keep.variable) {
+      demoOverlay(0, 1, 'Your area is ready: choose a question or a variable, then press Investigate');
+      await demoWait(6000);
+      throw new Error('handed over');
+    }
+    demoOverlay(0, 1, qLabel);
+    await demoWait(600);
+    investigate();
+    await demoPoll(() => S.screen === 'verdict' && S.result, 300, 30000);
+    await demoPoll(() => S.explain && S.explain.status !== 'loading', 400, 20000);
+    renderPanel();
+    demoOverlay(0, 1, `${qLabel} — now try your own area!`);
+    await demoWait(10000);
+  } catch (_) { /* stopped */ }
+  demoHide();
+  demoRunning = false;
+  demoAbort = null;
+}
+
+// A fixed case that always plays to the verdict, so the demo works offline from location and on any projector.
+const EXAMPLE = { name: 'Tunis', lat: 36.8, lon: 10.18, question: 'hotter', label: 'Tunis, Tunisia: is it getting hotter?' };
+
+async function runExample() {
+  if (demoRunning) return;
+  demoRunning = true;
+  pref.set('coach', 'done');
+  $('coach').hidden = true;
+  try {
+    if (S.screen === 'verdict') newCase();
+    demoOverlay(0, 3, `Example: ${EXAMPLE.label}`);
+    S.question = EXAMPLE.question; S.variable = null; S.userChose = true;
+    S.place = { name: EXAMPLE.name, lat: EXAMPLE.lat, lon: EXAMPLE.lon };
+    selectAround(S.place, 0.6);
+    await demoPoll(() => S.climate !== null, 300, 15000);
+    adoptQuestion(); renderPanel();
+    demoOverlay(1, 3, 'Testing 45 years of NASA data for this area…');
+    await demoWait(1500);
+    investigate();
+    await demoPoll(() => S.screen === 'verdict' && S.result, 300, 30000);
+    demoOverlay(2, 3, 'The verdict: the rate per decade, how sure we are, and a second NASA dataset');
+    await demoPoll(() => S.explain && S.explain.status !== 'loading', 400, 90000);
+    demoOverlay(3, 3, 'Now try your own area: draw a loop on the map');
+    await demoWait(8000);
+  } catch (_) { /* stopped */ }
+  demoHide();
+  demoRunning = false;
+  demoAbort = null;
+}
+
+ACTIONS.rundemo = () => runDemo();
+ACTIONS.example = () => runExample();
+
+// ---------------------------------------------------------------- boot
+// ------------------------------------------------------------------ resizable panel
+// Drag the panel's left edge (or focus it and use the arrow keys) to widen or narrow the trends panel.
+// The width lives in the --panel-w CSS variable, so the top bar and hint follow; it is remembered.
+const PANEL_MIN = 340, PANEL_DEFAULT = 436, PANEL_GAP = 14;
+const panelMax = () => Math.max(PANEL_MIN, Math.round(window.innerWidth * 0.7));
+const panelWidth = () => $('panel').getBoundingClientRect().width;
+
+function setPanelWidth(px, save = true) {
+  const w = Math.round(Math.min(panelMax(), Math.max(PANEL_MIN, px)));
+  document.documentElement.style.setProperty('--panel-w', `${w}px`);
+  const h = $('panel-resize');
+  h.setAttribute('aria-valuenow', w);
+  h.setAttribute('aria-valuemax', panelMax());
+  if (save) pref.set('panelW', String(w));
+  return w;
+}
+
+let panelChartsTimer = 0;
+function panelChartsFollow() {
+  // Plotly charts are responsive to window resizes; nudge them after the panel changes width.
+  clearTimeout(panelChartsTimer);
+  panelChartsTimer = setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+}
+
+function initPanelResize() {
+  const h = $('panel-resize');
+  if (!h) return;
+  h.setAttribute('aria-valuemin', PANEL_MIN);
+  const wanted = () => parseInt(pref.get('panelW', ''), 10) || PANEL_DEFAULT;
+  setPanelWidth(wanted(), false);
+
+  h.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    h.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev) => { setPanelWidth(window.innerWidth - ev.clientX - PANEL_GAP, false); panelChartsFollow(); };
+    const up = () => {
+      document.body.classList.remove('resizing');
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      h.removeEventListener('pointercancel', up);
+      setPanelWidth(panelWidth());
+      panelChartsFollow();
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+    h.addEventListener('pointercancel', up);
+  });
+  h.addEventListener('dblclick', () => { setPanelWidth(PANEL_DEFAULT); panelChartsFollow(); });
+  h.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 80 : 20;
+    const to = { ArrowLeft: panelWidth() + step, ArrowRight: panelWidth() - step, Home: panelMax(), End: PANEL_MIN }[e.key];
+    if (to === undefined) return;
+    e.preventDefault();
+    setPanelWidth(to);
+    panelChartsFollow();
+  });
+  // A smaller window may squeeze the panel; growing the window back restores the chosen width.
+  window.addEventListener('resize', (e) => { if (e.isTrusted) setPanelWidth(wanted(), false); });
+}
+
+(async function boot() {
+  initPanelResize();
+  S.ui = pref.get('ui', 'simple') === 'expert' ? 'expert' : 'simple';
+  try {
+    S.meta = await api('/api/meta');
+    S.years = [...S.meta.years];
+  } catch (err) {
+    $('panel-body').innerHTML = `<p role="alert" class="note">Could not reach the server: ${esc(err.message)}</p>`;
+    return;
+  }
+  // Land outline for "nearest land cells"; without it the app falls back to NASA's own land/sea answer per cell.
+  fetch('/land.json').then((r) => r.json()).then((d) => { S.isLand = G.landTester(d.polygons); }).catch(() => { /* optional */ });
+  const reopenVerdict = restoreFromHash();
+  setMode('pan');
+  if (S.picked.size) selectionChanged(); else { renderPanel(); loadQuestions(); }
+  if (reopenVerdict) investigate();
+  else if (S.restoreCompare) runCompare();
+  else if (!S.picked.size && pref.get('coach', '') !== 'done') showWelcome();
+})();
+
+// ---------------------------------------------------------------- (!) definitions: hover, focus or tap
+(function infoTips() {
+  const tip = document.createElement('div');
+  tip.id = 'tip'; tip.setAttribute('role', 'tooltip'); tip.hidden = true;
+  document.body.appendChild(tip);
+  let owner = null;
+  const show = (el) => {
+    owner = el;
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const r = el.getBoundingClientRect(), w = Math.min(280, window.innerWidth - 16);
+    tip.style.width = w + 'px';
+    const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+    const h = tip.offsetHeight, above = r.top - h - 8;
+    tip.style.left = left + 'px';
+    tip.style.top = (above > 8 ? above : r.bottom + 8) + 'px';
+  };
+  const hide = () => { owner = null; tip.hidden = true; };
+  document.addEventListener('pointerover', (e) => { const el = e.target.closest && e.target.closest('.info'); if (el && e.pointerType === 'mouse') show(el); });
+  document.addEventListener('pointerout', (e) => { const el = e.target.closest && e.target.closest('.info'); if (el && e.pointerType === 'mouse' && !el.contains(e.relatedTarget)) hide(); });
+  document.addEventListener('focusin', (e) => { if (e.target.classList && e.target.classList.contains('info')) show(e.target); });
+  document.addEventListener('focusout', (e) => { if (e.target === owner) hide(); });
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest && e.target.closest('.info');
+    if (el) { e.preventDefault(); e.stopPropagation(); if (owner === el && !tip.hidden) hide(); else show(el); }
+    else if (owner) hide();
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  document.addEventListener('scroll', hide, true);
+})();

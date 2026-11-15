@@ -5,6 +5,7 @@
     python scripts/prefetch_demo.py --regions tunisia nile_delta
     python scripts/prefetch_demo.py --box 7.5 30.2 11.6 37.5 --name Tunisia
     python scripts/prefetch_demo.py --out verdicts.md --zip
+    python scripts/prefetch_demo.py --box 7.5 30.2 11.6 37.5 --name Tunisia --giovanni   # + AIRS, IMERG, quota
 
 --out also writes the summary as Markdown (to post in the team chat).
 --zip packs data/cache/*.json into data/cache.zip to share (both gitignored).
@@ -69,6 +70,24 @@ def summarise(name: str, box, start: int, end: int) -> list[str]:
     return lines
 
 
+def prefetch_giovanni(box, start: int, end: int) -> list[str]:
+    """Warm the Giovanni cache (second sources, step 7) so the live demo never waits on a Giovanni job."""
+    from td.giovanni import GIOVANNI_VARIABLES, GiovanniError, area_box, fetch_series_giovanni
+
+    lines = [f"- Giovanni box (rounded out to whole degrees): {area_box(box)}"]
+    for gid in GIOVANNI_VARIABLES:
+        t0 = time.time()
+        try:
+            s = fetch_series_giovanni(gid, box, start, end)
+        except GiovanniError as err:
+            lines.append(f"- **{gid}**: not fetched: {err}")
+            continue
+        lines.append(f"- **{gid}**: {len(s)} months {s.index[0]:%Y-%m} to {s.index[-1]:%Y-%m}, "
+                     f"mean {s.mean():.3f} {s.attrs.get('units', '')}, last {s.iloc[-1]:.3f} "
+                     f"({time.time() - t0:.0f} s)")
+    return lines
+
+
 def zip_cache(dest: Path) -> int:
     files = sorted(cache.cache_dir().glob("*.json"))
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -86,6 +105,8 @@ def main(argv=None) -> int:
     ap.add_argument("--end", type=int, default=LAST_YEAR)
     ap.add_argument("--out", type=Path, help="also write the summary to this Markdown file")
     ap.add_argument("--zip", action="store_true", help="pack data/cache into data/cache.zip")
+    ap.add_argument("--giovanni", action="store_true",
+                    help="also fetch the second sources (AIRS, IMERG) via Giovanni; needs EARTHDATA_* in .env")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -108,9 +129,18 @@ def main(argv=None) -> int:
         except (FetchError, ValueError) as err:
             failures += 1
             lines = [f"### {name}, box {box}", f"- FAILED: {err}"]
+        if args.giovanni:
+            lines += prefetch_giovanni(box, args.start, args.end)
         print("\n".join(lines), flush=True)
         out += lines + [""]
 
+    if args.giovanni:
+        from td.giovanni import GiovanniError, quota
+
+        try:
+            print(f"\nGiovanni monthly quota (0 to 1): {quota()}")
+        except GiovanniError as err:
+            print(f"\nGiovanni quota not checked: {err}")
     if args.out:
         args.out.write_text("\n".join(out), encoding="utf-8")
         print(f"\nSummary written to {args.out}")
