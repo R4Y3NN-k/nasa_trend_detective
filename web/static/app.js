@@ -1223,7 +1223,70 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------- boot
+// ------------------------------------------------------------------ resizable panel
+// Drag the panel's left edge (or focus it and use the arrow keys) to widen or narrow the trends panel.
+// The width lives in the --panel-w CSS variable, so the top bar and hint follow; it is remembered.
+const PANEL_MIN = 340, PANEL_DEFAULT = 436, PANEL_GAP = 14;
+const panelMax = () => Math.max(PANEL_MIN, Math.round(window.innerWidth * 0.7));
+const panelWidth = () => $('panel').getBoundingClientRect().width;
+
+function setPanelWidth(px, save = true) {
+  const w = Math.round(Math.min(panelMax(), Math.max(PANEL_MIN, px)));
+  document.documentElement.style.setProperty('--panel-w', `${w}px`);
+  const h = $('panel-resize');
+  h.setAttribute('aria-valuenow', w);
+  h.setAttribute('aria-valuemax', panelMax());
+  if (save) pref.set('panelW', String(w));
+  return w;
+}
+
+let panelChartsTimer = 0;
+function panelChartsFollow() {
+  // Plotly charts are responsive to window resizes; nudge them after the panel changes width.
+  clearTimeout(panelChartsTimer);
+  panelChartsTimer = setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+}
+
+function initPanelResize() {
+  const h = $('panel-resize');
+  if (!h) return;
+  h.setAttribute('aria-valuemin', PANEL_MIN);
+  const wanted = () => parseInt(pref.get('panelW', ''), 10) || PANEL_DEFAULT;
+  setPanelWidth(wanted(), false);
+
+  h.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    h.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev) => { setPanelWidth(window.innerWidth - ev.clientX - PANEL_GAP, false); panelChartsFollow(); };
+    const up = () => {
+      document.body.classList.remove('resizing');
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      h.removeEventListener('pointercancel', up);
+      setPanelWidth(panelWidth());
+      panelChartsFollow();
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+    h.addEventListener('pointercancel', up);
+  });
+  h.addEventListener('dblclick', () => { setPanelWidth(PANEL_DEFAULT); panelChartsFollow(); });
+  h.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 80 : 20;
+    const to = { ArrowLeft: panelWidth() + step, ArrowRight: panelWidth() - step, Home: panelMax(), End: PANEL_MIN }[e.key];
+    if (to === undefined) return;
+    e.preventDefault();
+    setPanelWidth(to);
+    panelChartsFollow();
+  });
+  // A smaller window may squeeze the panel; growing the window back restores the chosen width.
+  window.addEventListener('resize', (e) => { if (e.isTrusted) setPanelWidth(wanted(), false); });
+}
+
 (async function boot() {
+  initPanelResize();
   S.ui = pref.get('ui', 'simple') === 'expert' ? 'expert' : 'simple';
   try {
     S.meta = await api('/api/meta');
