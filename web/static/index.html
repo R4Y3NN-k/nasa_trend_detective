@@ -5,88 +5,72 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trend Detective</title>
+<meta name="description" content="Is the climate changing where you live? Check the evidence yourself, from NASA data.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://cdn.tailwindcss.com/3.4.17"></script>
-<script>
-  // Palette from the uMap HOT template we chose as reference.
-  tailwind.config = {
-    theme: {
-      extend: {
-        fontFamily: { sans: ['Archivo', 'Helvetica', 'Arial', 'sans-serif'] },
-        colors: {
-          sea: '#8CDCD9', land: '#F4F3EF', ink: '#1F2024', charcoal: '#404248', muted: '#5A5B60',
-          line: '#DDDDDD', teal: { DEFAULT: '#046460', dark: '#034A47', soft: '#E8F7F6', edge: '#B6E3E1' },
-          navy: '#1B2A8C', rise: '#C2410C', fall: '#1D4ED8', amber: { soft: '#FDF1DC', ink: '#7A4A00' }
-        }
-      }
-    }
-  };
-</script>
-<style>
-  html, body { height: 100%; margin: 0; }
-  .leaflet-container { font-family: Archivo, Helvetica, Arial, sans-serif; background: #8CDCD9; }
-  #map.drawing, #map.drawing .leaflet-interactive { cursor: crosshair; }
-  .leaflet-control-zoom a { width: 44px !important; height: 44px !important; line-height: 44px !important; font-size: 20px !important; }
-  .leaflet-top.leaflet-left { top: 0; }
-  .panel-scroll::-webkit-scrollbar { width: 8px; } .panel-scroll::-webkit-scrollbar-thumb { background: #D5D5D2; border-radius: 4px; }
-  ::selection { background: #B6E3E1; color: #1F2024; }
-  :focus-visible { outline: 3px solid #046460; outline-offset: 2px; border-radius: 4px; }
-</style>
+<link rel="stylesheet" href="/app.css">
 </head>
-<body class="font-sans text-ink bg-sea overflow-hidden">
+<body>
 
-<div id="map" class="absolute inset-0"></div>
+<div id="map" aria-label="Map: pick the area to investigate"></div>
 
-<!-- Left tools (uMap style), under Leaflet's zoom control -->
-<div class="absolute left-[10px] top-[112px] z-[1000] flex flex-col gap-2">
-  <div class="flex flex-col bg-white border border-[#CCCCCC] rounded shadow overflow-hidden">
-    <button id="tool-pan" type="button" aria-label="Move the map (drag)" title="Move the map: drag, scroll to zoom, arrow keys"
-      class="w-11 h-11 flex items-center justify-center border-b border-line">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11.5v-2a1.5 1.5 0 0 1 3 0V12"/><path d="M14 10.5a1.5 1.5 0 0 1 3 0V12"/><path d="M17 11.5a1.5 1.5 0 0 1 3 0V16a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.6-4a1.5 1.5 0 0 1 2.5-1.7L8 15"/></svg>
+<!-- Map tools, under Leaflet's zoom control -->
+<div class="tools">
+  <div class="toolbar" role="toolbar" aria-label="Map tools">
+    <button id="tool-pan" class="tool" type="button" aria-label="Move the map" title="Move the map: drag, scroll to zoom, arrow keys">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11.5v-2a1.5 1.5 0 0 1 3 0V12"/><path d="M14 10.5a1.5 1.5 0 0 1 3 0V12"/><path d="M17 11.5a1.5 1.5 0 0 1 3 0V16a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.6-4a1.5 1.5 0 0 1 2.5-1.7L8 15"/></svg>
     </button>
-    <button id="tool-draw" type="button" aria-label="Draw freehand around an area" title="Draw freehand"
-      class="w-11 h-11 flex items-center justify-center border-b border-line">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20c2-1 3-3 4-5s3-6 6-8 6-1 6 2-4 4-7 4-5 2-5 4 2 3 4 3"/></svg>
+    <button id="tool-draw" class="tool" type="button" aria-label="Draw a loop around an area" title="Draw a loop around an area (or hold Shift and drag)">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2-1 3-3 4-5s3-6 6-8 6-1 6 2-4 4-7 4-5 2-5 4 2 3 4 3"/></svg>
     </button>
-    <button id="tool-points" type="button" aria-label="Tap grid points one by one" title="Pick points"
-      class="w-11 h-11 flex items-center justify-center border-b border-line">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>
+    <button id="tool-points" class="tool" type="button" aria-label="Pick grid cells one by one" title="Pick grid cells one by one">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>
     </button>
-    <button id="tool-clear" type="button" aria-label="Clear the selection" title="Clear"
-      class="w-11 h-11 flex items-center justify-center hover:bg-land">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+    <button id="tool-undo" class="tool" type="button" aria-label="Undo the last change to the selection" title="Undo (Ctrl+Z)" disabled>
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+    </button>
+    <button id="tool-clear" class="tool" type="button" aria-label="Clear the selection" title="Clear the selection">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
     </button>
   </div>
-  <button id="tool-home" type="button" aria-label="Back to Tunisia" title="Back to Tunisia"
-    class="w-[46px] h-[46px] bg-white border border-[#CCCCCC] rounded shadow flex items-center justify-center hover:bg-land">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg>
-  </button>
 </div>
 
-<!-- Brand pill -->
-<div class="absolute left-[68px] top-[10px] z-[1000] flex items-center gap-2.5 py-2.5 pl-3.5 pr-5 bg-charcoal text-white rounded-full shadow-lg">
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8CDCD9" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/><path d="M7.5 12l2-2.5 2 1.5 2-3"/></svg>
-  <span class="text-[17px] font-bold">Trend Detective</span>
-  <span class="text-[13px] text-[#CFD0D4] hidden md:inline">Is it really changing?</span>
+<!-- Brand + place search -->
+<div class="topbar">
+  <div class="brand">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/><path d="M7.5 12l2-2.5 2 1.5 2-3"/></svg>
+    <b>Trend Detective</b>
+  </div>
+  <div class="search" role="search">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+    <label class="sr" for="place">Go to a place</label>
+    <input id="place" type="search" placeholder="Go to a place…" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="place-results" aria-autocomplete="list">
+    <div id="place-results" class="results" role="listbox" hidden></div>
+  </div>
 </div>
 
-<!-- Hint pill -->
-<div id="hint" class="absolute bottom-[calc(52vh+1.5rem)] md:bottom-7 left-4 md:left-[calc((100%-452px)/2)] md:-translate-x-1/2 z-[1000] flex items-center gap-2.5 py-3 px-[18px] bg-charcoal text-white rounded-full shadow-lg text-sm max-w-[calc(100%-2rem)]">
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8CDCD9" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/></svg>
-  <span id="hint-text">Draw around the area you want to investigate</span>
+<!-- One line of guidance; doubles as the map legend on the verdict screen -->
+<div id="hint" class="hint" role="status">
+  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/></svg>
+  <span id="hint-text"></span>
+  <button id="hint-action" type="button" hidden></button>
 </div>
+
+<!-- First-run guide (shown once) -->
+<div id="coach" class="coach" role="dialog" aria-label="How it works" hidden></div>
 
 <!-- Dashboard -->
-<aside id="panel" aria-label="Dashboard"
-  class="absolute z-[1000] left-3 right-3 bottom-3 h-[52vh] md:h-auto md:left-auto md:top-4 md:right-4 md:bottom-4 md:w-[420px] flex flex-col bg-white/95 border border-line rounded-[10px] shadow-xl overflow-hidden">
-  <div id="panel-body" class="panel-scroll flex-1 overflow-y-auto px-6 py-5"></div>
-  <div id="panel-foot" class="px-6 pt-4 pb-5 border-t border-[#E6E6E3] bg-white"></div>
+<aside id="panel" class="panel" aria-label="Dashboard">
+  <div id="panel-head" class="panel-head"></div>
+  <div id="panel-body" class="panel-body"></div>
+  <div id="panel-foot" class="panel-foot"></div>
 </aside>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/vendor/plotly.min.js"></script>
+<script src="/grid.js"></script>
+<script src="/places.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

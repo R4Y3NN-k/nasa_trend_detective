@@ -24,7 +24,10 @@ Used live in a demo (2 to 3 minutes for judges), on a laptop browser, and by peo
 
 ## Capabilities and Constraints
 - Main data: NASA POWER (MERRA-2) for temperature, rain and topsoil wetness, 1981 to 2025. Cross-checks: GPM IMERG, CHIRPS, AIRS, GLDAS, FLDAS via Giovanni (needs an Earthdata login; the app must still work without one), and MODIS/VIIRS NDVI via AppEEARS.
-- Existing front end: a single page (web/static/index.html, app.js) with Tailwind via CDN, Leaflet for the map and Plotly for charts, served by a standard-library Python server. The stack is decided and is not part of this record.
+- Existing front end: a single page (web/static/index.html, app.css, app.js) with a hand-written stylesheet (no Tailwind, no build step), Leaflet for the map and Plotly for charts, served by a standard-library Python server. The stack is decided and is not part of this record.
+- Two levels of detail, Simple (default) and Expert, switched in the panel header. Both show the same verdict and numbers; Expert only adds depth (principle 2). Decided 15 Nov 2026.
+- Colour roles: teal for actions and brand; orange and blue only for direction (rising, falling); amber only for real caution (datasets disagree, all-sea selection). Icons are one inline-SVG set, never emoji.
+- Place search uses a list bundled with the app (demo areas, capitals, large cities), not a third-party geocoder.
 - Terminology: "trend per decade", "95% range", "significant" (both tests p < 0.05 and the same sign), "suggestive" (either p < 0.10), "single source only". Say "consistent with", never "caused by".
 - Undecided: the name and wording of the cross-check summary ("3 NASA sources agree") are proposals from the plan, not yet tested with users.
 

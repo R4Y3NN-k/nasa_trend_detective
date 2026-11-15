@@ -31,6 +31,15 @@ dataset.
   in a flat 2D plot and in an optional 3D view.
 - **Plain words.** A short summary for non-experts, written by Google Gemini from the app's own numbers. Any number
   or claim the app didn't compute is rejected and a template is used instead.
+- **Simple and Expert.** One switch in the panel. Simple shows the answer as a sentence, decade bars, the seasons
+  and the cross-check in one line. Expert adds both tests with p-values, the 95% range, the per-cell map with
+  q-values, Groups and downloads (series CSV, per-cell CSV, the case as JSON). Same verdict and numbers in both.
+- **Decade by decade, season by season.** The average anomaly of each decade, and the same tests run on each
+  season's months. A season is only called "fastest" when its 95% range clears another's.
+- **Any loop works.** A loop smaller than one grid cell, or one drawn over the sea, uses the nearest land cells
+  (an exact ring search on the grid) and says so; added cells get a dashed ring.
+- **A link reopens a case.** The cells, years, question and level of detail live in the page address, so a
+  teacher can send a case to a class. A printable one-page report is one click away.
 
 ![Cross-check: MERRA-2 and the AIRS satellite agree that Tunis is warming, year-by-year chart](docs/img/cross-check.jpg)
 
@@ -73,7 +82,7 @@ cd nasa_trend_detective
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-python -m pytest -q                # 85 tests, all offline
+python -m pytest -q                # 92 tests, all offline (one needs Node.js and is skipped without it)
 python -m web.server               # map-first app on http://localhost:8600
 ```
 
@@ -99,9 +108,14 @@ area once, or run `python scripts/prefetch_demo.py --giovanni`.
 | ✋ Hand (default) | Drag to move, scroll to zoom, arrow keys |
 | ✏️ Pen | Draw one loop around an area, then you are back to the hand. **Shift + drag** also draws, from any tool |
 | ⁘ Points | Tap grid cells one by one (up to 30) |
+| ↶ Undo | Take back the last change to the selection (**Ctrl/Cmd + Z**); **Esc** leaves the pen |
+| Search box | "Go to a place": our demo areas, capitals and large cities, from a list bundled with the app (no third-party service). Then **Investigate this area** draws a box of about 2° × 2° |
 
-After **Investigate**, the panel has tabs: **Time series**, **Zones** (each cell tested alone, with a false-discovery
-correction), **Groups** (2D / 3D), **Evidence** and **Method**.
+After **Investigate**, the panel shows the verdict, decade bars, the plain-words summary, the cross-check, the
+seasons and (where it applies) uplands vs lowlands. In **Expert** it adds the tests and tabs: **Time series**,
+**Zones** (each cell tested alone, with a false-discovery correction), **Groups** (2D / 3D), **Evidence** and **Method**.
+
+Before and after the interface pass (desktop and phone): [docs/img/ui-pass/](docs/img/ui-pass/).
 
 ![Groups: cells that change alike share a colour on the map and in the 3D view](docs/img/groups-3d.jpg)
 
@@ -128,14 +142,16 @@ correction), **Groups** (2D / 3D), **Evidence** and **Method**.
 
 ```
 web/server.py        map-first app: JSON API + static page (standard library HTTP server)
-web/static/          the page (Leaflet map, Plotly charts)
+web/static/          the page: index.html, app.css (hand-written, no build step), app.js, grid.js (cell maths and
+                     nearest-land ring search), places.js (search list), land.json (Natural Earth 1:110m land,
+                     public domain). Leaflet map, Plotly charts
 td/fetch.py          NASA POWER client, grid, land mask, area average, elevation
 td/giovanni.py       AIRS and GPM IMERG via Giovanni (harmony-py), cache, quota
 td/analyze.py        trend tests, verdict words, agreement(), compare()
 td/trendmap.py       per-cell trends with FDR, trend groups (cluster tree)
 td/questions.py      climate type and the questions that fit it
 td/explain.py        Gemini plain-words summary with number and claim checks
-tests/               85 offline tests (NASA and Gemini replaced by fakes)
+tests/               offline tests (NASA and Gemini replaced by fakes); grid_check.js runs under Node
 ```
 
 ## Team

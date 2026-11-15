@@ -110,34 +110,3 @@ def test_groups_need_four_land_points(monkeypatch):
     monkeypatch.setattr(server, "fetch_points", lambda pts, y0, y1: {pt: _land(100.0, 0.3, 1) for pt in pts})
     out = server.cluster_view({"points": [[36.0, 10.0], [36.5, 10.0]], "years": [1981, 2025]})
     assert not out["ok"] and "at least 4" in out["reason"]
-
-
-# ---------------------------------------------------------------- decades, seasons, second-source flag, nearest
-
-def test_analysis_carries_decades_seasons_and_second_source_flag(monkeypatch, one_land_point):
-    out = server.run_analysis(BODY)
-    assert out["has_second_source"] is True
-    assert [d["label"] for d in out["decades"]] == ["1980s", "1990s", "2000s", "2010s", "2020s"]
-    assert out["decades"][0]["mean"] < out["decades"][-1]["mean"]            # +0.4 per decade series
-    assert abs(sum(d["mean"] * d["months"] for d in out["decades"])) < 1e-6  # anomalies average to zero
-    assert len(out["seasons"]["rows"]) == 4 and out["seasons"]["rows"][0]["name"].startswith("Winter")
-    assert server.run_analysis({**BODY, "var_id": "GWETTOP"})["has_second_source"] is False
-
-
-def test_season_names_follow_the_hemisphere():
-    s = sample_series("T2M", slope_decade=0.4, seed=1)
-    assert server.season_trends(s, "T2M", -30.0)["rows"][0]["name"].startswith("Summer")
-    assert server.season_trends(s, "T2M", 2.0)["rows"][0]["name"] == "Dec–Feb"
-
-
-def test_nearest_endpoint_uses_land_cells_only(monkeypatch):
-    def fake_fetch(lat, lon, y0, y1):
-        df = _frame(0.1)
-        if lon < 10.0:
-            df["GWETTOP"] = 1.0                                              # sea
-        return df
-    monkeypatch.setattr(server, "fetch_point", fake_fetch)
-    out = server.nearest_cells({"center": [36.0, 9.4], "k": 4})
-    assert len(out["cells"]) == 4 and all(lon >= 10.0 for _, lon in out["cells"])
-    with pytest.raises(FetchError):
-        server.nearest_cells({"center": "x"})

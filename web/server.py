@@ -18,6 +18,7 @@ API
                                        Giovanni) over the shared years, and whether the two agree
     POST /api/scan       {points, years}
                                        every variable tested on the area (drives the suggested questions)
+    POST /api/seasons    {points, var_id, years}   the same tests per season (DJF, MAM, JJA, SON)
     POST /api/explain    {points, var_id, question_id, years, cross}
                                        plain-language summary + next questions (Gemini or a template;
                                        only numbers the app computed are allowed)
@@ -604,86 +605,6 @@ def group_figure(points, zones, features, pct, three_d: bool) -> dict:
     return out
 
 
-# ------------------------------------------------------------------ decades, seasons, nearest land
-
-def decade_means(anomalies: pd.Series) -> list[dict]:
-    """Average anomaly per decade (1980s ... 2020s): the numbers behind the decade bars and the time sweep."""
-    out = []
-    for dec, g in anomalies.dropna().groupby(lambda d: d.year // 10 * 10):
-        out.append({"decade": int(dec), "label": f"{dec}s", "first_year": int(g.index[0].year),
-                    "last_year": int(g.index[-1].year), "months": int(len(g)), "mean": num(g.mean())})
-    return out
-
-
-SEASONS = (("DJF", (12, 1, 2), "Dec–Feb"), ("MAM", (3, 4, 5), "Mar–May"),
-           ("JJA", (6, 7, 8), "Jun–Aug"), ("SON", (9, 10, 11), "Sep–Nov"))
-NORTH_NAMES = {"DJF": "Winter", "MAM": "Spring", "JJA": "Summer", "SON": "Autumn"}
-SOUTH_NAMES = {"DJF": "Summer", "MAM": "Autumn", "JJA": "Winter", "SON": "Spring"}
-
-
-def season_trends(series: pd.Series, var_id: str, mean_lat: float) -> dict | None:
-    """The same tests on each season's months. Season names follow the hemisphere; none near the equator."""
-    names = NORTH_NAMES if mean_lat >= 15 else SOUTH_NAMES if mean_lat <= -15 else {}
-    rows, results = [], {}
-    for sid, months_, span in SEASONS:
-        s = series[series.index.month.isin(months_)]
-        if s.dropna().std() == 0 or len(s.dropna()) < 60:
-            continue
-        try:
-            res = analyze(s, var_id)
-        except Exception:
-            continue
-        if res["slope_decade"] is None or not math.isfinite(res["slope_decade"]):
-            continue
-        name = f"{names[sid]} ({span})" if names else span
-        results[sid] = (name, res)
-        rows.append({"id": sid, "name": name, "slope_decade": num(res["slope_decade"]),
-                     "ci_decade": num(res["ci_decade"]), "tier": res["tier"]})
-    if len(rows) < 2:
-        return None
-    from td.analyze import compare
-
-    clear = {k: v for k, v in results.items() if v[1]["tier"] != "none"}
-    if not clear:
-        sentence = "No season shows a clear change on its own."
-    else:
-        fast = max(clear.values(), key=lambda x: abs(x[1]["slope_decade"]))
-        slow = min(results.values(), key=lambda x: abs(x[1]["slope_decade"]))
-        (lo_a, hi_a), (lo_b, hi_b) = fast[1]["ci_decade"], slow[1]["ci_decade"]
-        if fast is not slow and (hi_a < lo_b or hi_b < lo_a):
-            sentence = compare(fast[1], slow[1], fast[0], slow[0])
-        else:
-            sentence = "The seasons change at a similar rate; the differences are within the uncertainty."
-    return {"rows": rows, "sentence": sentence}
-
-
-def nearest_cells(body) -> dict:
-    """Nearest land cells around a point, for loops smaller than a cell or drawn on the sea."""
-    from td.nearest import nearest_land
-
-    try:
-        lat, lon = (float(x) for x in body.get("center"))
-    except (TypeError, ValueError):
-        raise FetchError("Send the centre as [lat, lon].") from None
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        raise FetchError("The centre is outside the map.")
-    have = clean_points(body["have"]) if body.get("have") else []
-    k = max(1, min(int(body.get("k", 4)), 8))
-    y0, y1 = config.FIRST_YEAR, config.LAST_YEAR
-
-    def land_many(cells):
-        def one(pt):
-            try:
-                return pt if is_land(fetch_point(pt[0], pt[1], y0, y1)) else None
-            except FetchError:
-                return None
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            return [c for c in pool.map(one, cells) if c is not None]
-
-    cells, rings = nearest_land((lat, lon), k, land_many, have=have, max_rings=3)
-    return {"cells": [list(c) for c in cells], "rings": rings, "k": k}
-
-
 # ------------------------------------------------------------------ highland vs lowland (jury remark, step 6)
 
 MIN_RELIEF_M = 500   # below this, the area is flat enough for one trend
@@ -720,6 +641,68 @@ def elevation_split(land: dict, months, var_id: str) -> dict | None:
                                   "latlon": [[lat, lon] for lat, lon in pts]}
     return {"applies": True, "cut_m": round(cut), "range_m": [round(lo_e), round(hi_e)], "sentence": sentence,
             "high": group(res_h, len(high), mean_h, high), "low": group(res_l, len(low), mean_l, low)}
+
+
+# ------------------------------------------------------------------ decades and seasons (UI pass)
+
+def decade_means(anom: pd.Series) -> list[dict]:
+    """Mean monthly anomaly per calendar decade (1980s, 1990s, ...): the bars of the simple chart.
+
+    Decades with under 24 months of data are left out (a 2-month "decade" would mislead)."""
+    a = anom.dropna()
+    out = []
+    for dec, part in a.groupby((a.index.year // 10) * 10):
+        if len(part) < 24:
+            continue
+        out.append({"decade": f"{int(dec)}s", "first_year": int(part.index.year.min()),
+                    "last_year": int(part.index.year.max()), "months": int(len(part)), "mean": num(part.mean())})
+    return out
+
+
+SEASONS = [("DJF", (12, 1, 2)), ("MAM", (3, 4, 5)), ("JJA", (6, 7, 8)), ("SON", (9, 10, 11))]
+SEASON_NAMES = {True: {"DJF": "Winter", "MAM": "Spring", "JJA": "Summer", "SON": "Autumn"},      # northern
+                False: {"DJF": "Summer", "MAM": "Autumn", "JJA": "Winter", "SON": "Spring"}}     # southern
+
+
+def season_sentence(rows: list[dict], name: str, units: str, dec: int) -> str:
+    """One careful sentence: a season is only called faster when its 95% range clears another's."""
+    ok = [r for r in rows if r.get("slope_decade") is not None]
+    clear = [r for r in ok if r["tier"] == "significant"]
+    if len(ok) < 2:
+        return "Too few months per season to compare the seasons."
+    if not clear:
+        return "No single season shows a clear trend on its own."
+    top = max(clear, key=lambda r: abs(r["slope_decade"]))
+    others = [r for r in ok if r is not top]
+    low = min(others, key=lambda r: abs(r["slope_decade"]))
+    apart = top["ci_decade"][0] > low["ci_decade"][1] or top["ci_decade"][1] < low["ci_decade"][0]
+    word = "rising" if top["slope_decade"] > 0 else "falling"
+    rate = f"{top['slope_decade']:+.{dec}f} {units}".strip()
+    if apart:
+        return (f"{top['label']} is changing fastest: {name.lower()} {word} {rate} per decade, "
+                f"clearly more than in {low['label'].lower()} ({low['slope_decade']:+.{dec}f}).")
+    return (f"{top['label']} shows the largest change ({rate} per decade), but the seasons' 95% ranges overlap, "
+            f"so it is not clearly faster than the others.")
+
+
+def seasonal_trends(body) -> dict:
+    """The same tests, season by season (months of one season only), on the area mean."""
+    pts, land, data, var_id, y0, y1, months = area_data(body)
+    info = variables()[var_id]
+    series = data[var_id]
+    north = sum(lat for lat, _ in land) / len(land) >= 0
+    rows = []
+    for sid, ms in SEASONS:
+        row = {"id": sid, "label": SEASON_NAMES[north][sid], "months": list(ms)}
+        try:
+            r = analyze(series[series.index.month.isin(ms)], var_id)
+            row.update(slope_decade=num(r["slope_decade"]), ci_decade=num(r["ci_decade"]), tier=r["tier"],
+                       p_ttest=num(r["p_ttest"]), p_mk=num(r["p_mk"]), n_months=int(r["n_months"]))
+        except ValueError:
+            row.update(slope_decade=None, ci_decade=None, tier="none", p_ttest=None, p_mk=None, n_months=0)
+        rows.append(row)
+    return {"var_id": var_id, "years": [y0, y1], "hemisphere": "north" if north else "south", "seasons": rows,
+            "sentence": season_sentence(rows, info.get("name", var_id), info.get("units", ""), int(info.get("decimals", 2)))}
 
 
 def run_analysis(body) -> dict:
@@ -762,7 +745,7 @@ def run_analysis(body) -> dict:
         "elevation": elevation_split(land, months, var_id),
         "has_second_source": bool(second_source_for(var_id)),
         "decades": decade_means(res["_anomalies"]),
-        "seasons": season_trends(series, var_id, float(np.mean([pt[0] for pt in land]))),
+        "annual": (lambda a: {"year": [int(y) for y in a.index], "value": [num(v) for v in a]})(annual_anomalies(series)),
         "figures": {"anomaly": figure_json(trend_figure(series, res, view="anomaly")),
                     "raw": figure_json(trend_figure(series, res, view="raw"))},
         "series": {"month": [d.strftime("%Y-%m") for d in series.index], "value": [num(v) for v in series]},
@@ -809,6 +792,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/meta":
             return self.send_json({"years": [config.FIRST_YEAR, config.LAST_YEAR], "max_points": MAX_POINTS,
                                    "min_years": MIN_YEARS, "variables": variables()})
+        if path == "/docs/validation.md":
+            return self.send_file(ROOT / "docs" / "validation.md", "text/plain; charset=utf-8")
         if path == "/vendor/plotly.min.js":
             return self.send_file(PLOTLY_JS, "text/javascript; charset=utf-8")
         name = "index.html" if path in ("/", "") else path.lstrip("/")
@@ -816,7 +801,7 @@ class Handler(BaseHTTPRequestHandler):
         if STATIC.resolve() not in target.parents or not target.is_file():
             return self.send_json({"error": "Not found"}, 404)
         types = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+                 ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml"}
         return self.send_file(target, types.get(target.suffix, "application/octet-stream"))
 
     def do_POST(self):
@@ -830,14 +815,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(run_analysis(body))
             if self.path == "/api/crosscheck":
                 return self.send_json(cross_check(body))
-            if self.path == "/api/nearest":
-                return self.send_json(nearest_cells(body))
             if self.path == "/api/clusters":
                 return self.send_json(cluster_view(body))
             if self.path == "/api/climate":
                 return self.send_json(climate_from_means(body))
             if self.path == "/api/scan":
                 return self.send_json(quick_scan(body))
+            if self.path == "/api/seasons":
+                return self.send_json(seasonal_trends(body))
             if self.path == "/api/explain":
                 return self.send_json(explain_case(body))
             return self.send_json({"error": "Not found"}, 404)
