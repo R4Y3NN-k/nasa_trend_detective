@@ -77,3 +77,22 @@ def test_season_sentence_only_says_faster_when_ranges_do_not_overlap():
     assert "overlap" in overlap and "fastest" not in overlap
     none = server.season_sentence([_row("Winter", 0.1, -0.2, 0.4, "none"), _row("Summer", 0.0, -0.3, 0.3, "none")], "Rain", "mm/day", 2)
     assert none.startswith("No single season")
+
+
+def test_compare_areas_two_places_same_variable(monkeypatch):
+    fast, slow = {(36.5, 10.0), (36.0, 10.0)}, {(50.0, -97.5), (50.5, -97.5)}
+    monkeypatch.setattr(server, "fetch_points",
+                        lambda pts, y0, y1: {pt: _frame(0.8 if pt in fast else 0.0) for pt in pts})
+    out = server.compare_areas({"var_id": "T2M", "years": [1981, 2025],
+                                "a": {"name": "Tunis", "points": [list(p) for p in fast]},
+                                "b": {"name": "Manitoba", "points": [list(p) for p in slow]}})
+    assert out["a"]["name"] == "Tunis" and out["b"]["name"] == "Manitoba"
+    assert out["a"]["res"]["slope_decade"] > out["b"]["res"]["slope_decade"]
+    assert "Tunis" in out["sentence"] and "Manitoba" in out["sentence"]
+    assert out["a"]["decades"] and len(out["b"]["annual"]["year"]) == 45
+    assert "_res" not in out["a"]
+
+
+def test_compare_areas_rejects_an_unknown_variable(land_points):
+    with pytest.raises(server.FetchError):
+        server.compare_areas({"var_id": "NOPE", "a": {"points": BODY["points"]}, "b": {"points": BODY["points"]}})

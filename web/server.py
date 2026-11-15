@@ -706,6 +706,35 @@ def season_sentence(rows: list[dict], name: str, units: str, dec: int) -> str:
             f"so it is not clearly faster than the others.")
 
 
+def compare_areas(body) -> dict:
+    """Two places, one variable, same years: each place's trend, and one sentence that says which changes faster
+    only when the 95% ranges do not overlap (td.analyze.compare)."""
+    from td.analyze import compare
+
+    out = {}
+    for key in ("a", "b"):
+        side = body.get(key) or {}
+        pts, land, data, var_id, y0, y1, months = area_data({**side, "var_id": body.get("var_id"),
+                                                              "years": body.get("years")})
+        try:
+            res = analyze(data[var_id], var_id)
+        except ValueError as exc:
+            raise FetchError(f"{side.get('name') or key.upper()}: {exc}") from None
+        anom = annual_anomalies(data[var_id])
+        out[key] = {
+            "name": str(side.get("name") or ("Place A" if key == "a" else "Place B"))[:60],
+            "res": {k: num(v) for k, v in res.items() if not k.startswith("_")},
+            "words": verdict(res),
+            "points_used": len(land),
+            "decades": decade_means(res["_anomalies"]),
+            "annual": {"year": [int(y) for y in anom.index], "value": [num(v) for v in anom]},
+            "_res": res,
+        }
+    a, b = out["a"].pop("_res"), out["b"].pop("_res")
+    return {"var_id": var_id, "variable": variables()[var_id], "years": [y0, y1],
+            "sentence": compare(a, b, out["a"]["name"], out["b"]["name"]), "a": out["a"], "b": out["b"]}
+
+
 def seasonal_trends(body) -> dict:
     """The same tests, season by season (months of one season only), on the area mean."""
     pts, land, data, var_id, y0, y1, months = area_data(body)
@@ -847,6 +876,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(seasonal_trends(body))
             if self.path == "/api/explain":
                 return self.send_json(explain_case(body))
+            if self.path == "/api/compare":
+                return self.send_json(compare_areas(body))
             return self.send_json({"error": "Not found"}, 404)
         except FetchError as exc:
             return self.send_json({"error": str(exc)}, 400)

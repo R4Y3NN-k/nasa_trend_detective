@@ -26,6 +26,7 @@ const S = {
   pd: new Map(),              // key -> NASA POWER data for that cell: {status, land, means, ...}
   isLand: null,               // (lat, lon) -> bool from the bundled land outline, once loaded
   place: null,                // last place chosen in the search box
+  cmp: null,                  // comparison: {a: {name, cells, var_id}, data} while comparing two places
 };
 
 const RAMPS = {               // light = low, dark = high, for the real per-cell means
@@ -61,6 +62,8 @@ const ICONS = {
   layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>', hill: '<path d="M3 19l6-10 4 6 2-3 6 7z"/>',
   pin: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  spin: '<path d="M21 12a9 9 0 1 1-9-9"/>',
+  compare: '<path d="M7 4v16M17 4v16"/><path d="M3 8h8M13 16h8"/>', swap: '<path d="M7 7h13l-4-4M17 17H4l4 4"/>',
 };
 const ic = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -102,6 +105,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
 
 const pointsLayer = L.layerGroup().addTo(map);
 const zonesLayer = L.layerGroup().addTo(map);
+const cmpLayer = L.layerGroup().addTo(map);
 let lasso = null;
 const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const phone = () => window.innerWidth <= 820;
@@ -127,11 +131,14 @@ function updateHint() {
       : S.result && S.result.zones && S.result.zones.length
         ? '<span class="legend-sw" style="background:#C2410C"></span>rising<span class="legend-sw" style="background:#1D4ED8"></span>falling · a dot marks a clear trend at that cell'
         : 'The cells used for this verdict';
-  } else if (S.screen === 'loading') text.textContent = 'Fetching NASA POWER data…';
+  } else if (S.screen === 'compare' && S.cmp && S.cmp.data) {
+    const D = S.cmp.data;
+    text.innerHTML = `<span class="legend-sw cmp-a"></span>${esc(D.a.name)}<span class="legend-sw cmp-b"></span>${esc(D.b.name)}`;
+  } else if (S.screen === 'loading') text.textContent = S.cmp ? 'Comparing the two places…' : 'Fetching NASA POWER data…';
   else if (S.place && S.placeFresh) {
     text.textContent = `${S.place.name}: draw a loop, or`;
-    act.textContent = 'Investigate this area'; act.hidden = false;
-  } else if (S.mode === 'draw') text.textContent = 'Draw one loop around your area · Esc to cancel';
+    act.textContent = S.cmp ? 'Use this area as place B' : 'Investigate this area'; act.hidden = false;
+  } else if (S.cmp && !S.picked.size) text.textContent = `Place B: draw a loop or search for a place to compare with ${S.cmp.a.name}`; else if (S.mode === 'draw') text.textContent = 'Draw one loop around your area · Esc to cancel';
   else if (S.mode === 'points') text.textContent = `Tap grid cells to add or remove them (up to ${S.meta ? S.meta.max_points : 30})`;
   else text.textContent = phone() ? 'Pen tool: draw a loop around an area' : 'Drag to move · pen tool or Shift + drag to draw a loop around an area';
 }
@@ -145,6 +152,7 @@ function flash(msg) {
 
 function renderPoints() {
   pointsLayer.clearLayers();
+  if (S.screen === 'compare') return;
   const cap = S.meta ? S.meta.max_points : 30;
   const show = new Map(S.picked);
   if (S.mode === 'points' && S.screen === 'pick') {
@@ -484,8 +492,8 @@ function patch(id, html) {            // replace one section without redrawing t
 
 function headHtml() {
   const [first, last] = S.meta ? S.meta.years : [1981, 2025];
-  const left = S.screen === 'verdict'
-    ? `<button type="button" class="link" data-act="back">${ic('back', 's')}Change area or question</button>`
+  const left = S.screen === 'verdict' || S.screen === 'compare'
+    ? `<button type="button" class="link" data-act="back">${ic('back', 's')}${S.screen === 'compare' ? 'Change place B' : 'Change area or question'}</button>`
     : `<span class="head-name"><strong>Trend Detective</strong><span class="where" title="${last - first + 1} years of monthly NASA data">NASA data · ${first}–${last}</span></span>`;
   const tips = { simple: 'Simple: the answer in plain words and the key charts', expert: 'Expert: every test, number, map and method' };
   const seg = ['simple', 'expert'].map((m) => `<button type="button" data-act="ui" data-ui="${m}" aria-pressed="${S.ui === m}" title="${tips[m]}">${m === 'simple' ? 'Simple' : 'Expert'}</button>`).join('');
@@ -498,7 +506,9 @@ function renderPanel() {
   if (!flashTimer) updateHint();
   $('panel-head').innerHTML = headHtml();
   if (S.screen === 'loading') return renderLoading();
+  drawCmpLayer();
   if (S.screen === 'verdict') return renderVerdict();
+  if (S.screen === 'compare') return renderCompare();
   return renderPick();
 }
 
@@ -535,6 +545,7 @@ function yearOptions(selected, from, to) {
 function renderPick() {
   const n = S.picked.size;
   const [y0, y1] = S.years, [first, last] = S.meta.years;
+  if (S.cmp) return renderPickB();
   if (!n) {
     $('panel-body').innerHTML = `<div class="screen">
       <div class="stack">
@@ -579,6 +590,27 @@ function renderPick() {
     ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
   </div>`;
   $('panel-foot').innerHTML = `<button id="go" class="btn wide" type="button" data-act="go">Investigate ${ic('next')}</button>`;
+  syncGo();
+}
+
+// Choosing place B: the variable and years are A's, so the two trends are measured the same way.
+function cmpBanner() {
+  const A = S.cmp.a, v = S.meta.variables[A.var_id];
+  return `<div class="cmp-banner stack tight">
+    <p class="t-cap"><span class="legend-sw cmp-a"></span><strong>Place A: ${esc(A.name)}</strong> · ${esc(v.name.toLowerCase())}, ${A.years[0]} to ${A.years[1]}</p>
+    <p class="t-body">Now pick <strong>place B</strong>: draw a loop around it or search for it. It will be measured the same way.</p>
+    <button type="button" class="link" data-act="cend">Cancel the comparison</button>
+  </div>`;
+}
+
+function renderPickB() {
+  const n = S.picked.size, A = S.cmp.a;
+  $('panel-body').innerHTML = `<div class="screen">
+    <div class="stack"><h1 class="t-lead">Compare ${esc(A.name)} with another place</h1>${cmpBanner()}</div>
+    ${n ? `<div class="stack"><p class="t-cap"><span class="legend-sw cmp-b"></span><strong>Place B: ${esc(placeName([...S.picked.values()]))}</strong></p>${areaHtml()}</div>` : ''}
+    ${S.error ? `<p role="alert" class="note">${esc(S.error)}</p>` : ''}
+  </div>`;
+  $('panel-foot').innerHTML = `<button id="go" class="btn wide" type="button" data-act="go">${ic('compare')}Compare with ${esc(A.name)}</button>`;
   syncGo();
 }
 
@@ -674,6 +706,7 @@ function backToPick() {
 
 function newCase() {
   pushHistory();
+  S.cmp = null; drawCmpLayer();
   S.picked.clear(); S.added.clear(); S.note = null; S.capped = false; S.variable = null; S.userChose = false; S.place = null;
   S.question = S.questions[0] ? S.questions[0].id : null;
   setLasso(null);
@@ -928,6 +961,7 @@ function renderVerdict() {
     </div>
     ${decadesHtml()}
     ${untilHtml()}
+    <button type="button" class="btn quiet no-print" data-act="compare" style="align-self:flex-start">${ic('compare', 's')}Compare with another place</button>
     <div class="aside stack" style="gap:16px">${explainHtml()}</div>
     ${crossHtml()}
     ${seasonsHtml()}
@@ -1041,6 +1075,132 @@ function renderLoading() {
   $('panel-foot').innerHTML = `<button class="btn wide" type="button" disabled>${ic('spin', 'spin')}Investigating…</button>`;
 }
 
+// ---------------------------------------------------------------- compare two places (same variable, same years)
+const CMP_COLORS = { a: '#6D28D9', b: '#BE185D' };
+
+// A short name for a set of cells: the place searched for, the nearest bundled place, or coordinates.
+function placeName(cells) {
+  const lat = cells.reduce((s, c) => s + c[0], 0) / cells.length, lon = cells.reduce((s, c) => s + c[1], 0) / cells.length;
+  if (S.place && S.place.name !== 'this area' && G.haversineKm(lat, lon, S.place.lat, S.place.lon) < 150) return S.place.name;
+  let best = null, bestKm = 150;
+  for (const [name, , plat, plon] of window.TD_PLACES || []) {
+    const km = G.haversineKm(lat, lon, plat, plon);
+    if (km < bestKm) { best = name; bestKm = km; }
+  }
+  return best ? (bestKm < 60 ? best : `Near ${best}`) :`${Math.abs(lat).toFixed(1)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(1)}° ${lon >= 0 ? 'E' : 'W'}`;
+}
+
+function startCompare() {
+  const R = S.result, cells = [...S.picked.values()];
+  S.cmp = { a: { name: placeName(cells), cells, var_id: R.var_id, years: [...R.years] } };
+  S.variable = R.var_id; S.userChose = true; S.years = [...R.years];
+  pushHistory();
+  S.picked.clear(); S.added.clear(); S.note = null; S.capped = false; S.place = null;
+  setLasso(null);
+  backToPick();
+  setMode('pan');
+}
+
+async function runCompare() {
+  const A = S.cmp.a, cells = [...S.picked.values()];
+  if (!cells.length) return;
+  S.cmp.b = { name: placeName(cells), cells };
+  if (S.cmp.b.name === A.name) S.cmp.b.name += ' (B)';
+  S.cmp.data = null; S.error = null; S.screen = 'loading'; S.result = null;
+  zonesLayer.clearLayers();
+  renderPanel(); renderPoints();
+  try {
+    const data = await api('/api/compare', { var_id: A.var_id, years: A.years,
+      a: { name: A.name, points: A.cells }, b: { name: S.cmp.b.name, points: cells } });
+    if (!S.cmp) return;
+    S.cmp.data = data; S.screen = 'compare';
+    if (lasso) lasso.remove();
+    map.fitBounds(L.latLngBounds(A.cells.concat(cells)).pad(0.3), { ...mapPadding(), maxZoom: 7, animate: !reduceMotion });
+  } catch (err) {
+    S.screen = 'pick'; S.error = err.message;
+  }
+  renderPanel(); renderPoints(); updateHash();
+}
+
+function swapCompare() {
+  const { a, b } = S.cmp;
+  S.cmp = { a: { ...b, var_id: a.var_id, years: a.years } };
+  S.picked = new Map(a.cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
+  S.place = { name: a.name, lat: a.cells[0][0], lon: a.cells[0][1] };
+  runCompare();
+}
+
+function drawCmpLayer() {
+  cmpLayer.clearLayers();
+  if (!S.cmp) return;
+  const sides = [['a', S.cmp.a]];
+  if (S.screen === 'compare' && S.cmp.b) sides.push(['b', S.cmp.b]);
+  for (const [k, side] of sides) {
+    for (const [lat, lon] of side.cells) {
+      L.rectangle([[lat - DLAT / 2, lon - DLON / 2], [lat + DLAT / 2, lon + DLON / 2]],
+        { color: CMP_COLORS[k], weight: 2, fillColor: CMP_COLORS[k], fillOpacity: 0.28 })
+        .bindTooltip(`${k.toUpperCase()}: ${esc(side.name)}`).addTo(cmpLayer);
+    }
+  }
+}
+
+function cmpCard(k, side, v) {
+  const r = side.res, d = v.decimals ?? 2, u = v.units || '', st = statusOf(r.tier, r.slope_decade);
+  const range = r.ci_decade ? `${fmt(r.ci_decade[0], d)} to ${fmt(r.ci_decade[1], d)}` : '–';
+  return `<div class="cmp-card stack tight">
+    <p class="t-cap"><span class="legend-sw cmp-${k}"></span><strong>${k.toUpperCase()}: ${esc(side.name)}</strong></p>
+    <p><span class="t-title num">${fmt(r.slope_decade, d)}</span> <span class="t-cap">${esc(u)} ${term('decade', 'per decade')}</span></p>
+    <span class="status ${st.cls}">${ic(st.icon)}${st.words}</span>
+    ${S.ui === 'expert' ? `<p class="t-cap num">95% ${term('range', 'range')}: ${range}<br>p = ${fmtP(r.p_ttest)} (fit), ${fmtP(r.p_mk)} (rank) · ${plural(side.points_used, 'land cell')}</p>`
+      : `<p class="t-cap">${plural(side.points_used, 'land cell')}</p>`}
+  </div>`;
+}
+
+function renderCompare() {
+  const D = S.cmp.data, v = D.variable;
+  $('panel-body').innerHTML = `<div class="screen">
+    <div class="stack">
+      <p class="t-q">${esc(v.name)}: ${esc(D.a.name)} and ${esc(D.b.name)}, ${D.years[0]} to ${D.years[1]}</p>
+      <h1 class="t-lead">${esc(D.sentence)}</h1>
+      <div class="cmp-cards">${cmpCard('a', D.a, v)}${cmpCard('b', D.b, v)}</div>
+      <p class="t-cap">Each place is measured against its own usual climate, so a cold and a hot place can be compared. "Faster" is said only when the two 95% ranges do not overlap. This shows a change, not its cause.</p>
+    </div>
+    <section class="stack">
+      <div class="stack tight"><h2 class="t-title">Year by year</h2>
+        <p class="t-cap">Yearly ${term('anomaly', 'difference from usual')} in ${esc(v.units || 'units')}, each place against its own ${D.years[0]} to ${D.years[1]} average.</p></div>
+      <div id="cmp-series" class="chart" style="height:230px"></div>
+    </section>
+    <section class="stack">
+      <div class="stack tight"><h2 class="t-title">Decade by decade</h2>
+        <p class="t-cap">Average difference from usual in each decade.</p></div>
+      <div id="cmp-decades" class="chart" style="height:200px"></div>
+    </section>
+  </div>`;
+  $('panel-foot').innerHTML = `<div class="row">
+      <button type="button" class="btn quiet" data-act="cswap">${ic('swap', 's')}Swap</button>
+      <button type="button" class="btn quiet" data-act="share">${ic('link', 's')}Copy link</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn dark" data-act="cend">End comparison</button></div>
+    <p class="t-cap" style="margin-top:8px;font-size:11.5px">SI-assisted: parts of this app were drafted with Claude (Anthropic) and reviewed by the team.</p>`;
+  drawCompareCharts();
+}
+
+function drawCompareCharts() {
+  const D = S.cmp && S.cmp.data;
+  if (!D || !window.Plotly) return;
+  const u = D.variable.units || '', font = { family: 'Archivo, system-ui, sans-serif', size: 12, color: '#404248' };
+  const base = { margin: { l: 44, r: 10, t: 8, b: 30 }, font, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    showlegend: true, legend: { orientation: 'h', x: 0, y: 1.14 }, autosize: true,
+    yaxis: { zeroline: true, zerolinecolor: '#9A9893', gridcolor: '#ECEBE6' }, xaxis: { gridcolor: 'rgba(0,0,0,0)' } };
+  const cfg = { displayModeBar: false, responsive: true };
+  const line = (k) => ({ x: D[k].annual.year, y: D[k].annual.value, name: D[k].name, mode: 'lines+markers', type: 'scatter',
+    line: { color: CMP_COLORS[k], width: 2 }, marker: { size: 4 }, hovertemplate: `%{x}: %{y:+.2f} ${u}<extra>${esc(D[k].name)}</extra>` });
+  Plotly.react('cmp-series', [line('a'), line('b')], base, cfg);
+  const bars = (k) => ({ x: D[k].decades.map(decadeLabel), y: D[k].decades.map((x) => x.mean), name: D[k].name, type: 'bar',
+    marker: { color: CMP_COLORS[k] }, hovertemplate: `%{x}: %{y:+.2f} ${u}<extra>${esc(D[k].name)}</extra>` });
+  Plotly.react('cmp-decades', [bars('a'), bars('b')], { ...base, barmode: 'group', bargap: 0.25, xaxis: { type: 'category' } }, cfg);
+}
+
 // ---------------------------------------------------------------- downloads, sharing, printing
 function download(name, text, type) {
   const a = document.createElement('a');
@@ -1079,9 +1239,11 @@ function updateHash() {
   if (S.picked.size) parts.push('p=' + [...S.picked.values()].map(([lat, lon]) => `${+lat.toFixed(4)},${+lon.toFixed(4)}`).join(';'));
   if (S.years[0] !== S.meta.years[0] || S.years[1] !== S.meta.years[1]) parts.push(`y=${S.years[0]}-${S.years[1]}`);
   const { primary } = chosenVars();
-  if (S.picked.size && primary) { parts.push('v=' + primary); if (!S.variable && S.question) parts.push('q=' + S.question); }
+  if ((S.picked.size || S.cmp) && primary) { parts.push('v=' + primary); if (!S.variable && S.question) parts.push('q=' + S.question); }
   if (S.ui === 'expert') parts.push('m=expert');
+  if (S.cmp) parts.push('ca=' + S.cmp.a.cells.map(([lat, lon]) => `${+lat.toFixed(4)},${+lon.toFixed(4)}`).join(';'), 'cn=' + encodeURIComponent(S.cmp.a.name));
   if (S.screen === 'verdict') parts.push('s=v');
+  if (S.screen === 'compare') parts.push('s=c');
   ownHash = parts.length ? '#' + parts.join('&') : '';
   try { history.replaceState(null, '', ownHash || location.pathname); } catch (_) { /* sandboxed frame */ }
 }
@@ -1092,17 +1254,22 @@ window.addEventListener('hashchange', () => { if (location.hash !== ownHash) loc
 function restoreFromHash() {
   const h = new URLSearchParams(location.hash.replace(/^#/, ''));
   if (h.get('m') === 'expert' || h.get('m') === 'simple') S.ui = h.get('m');
-  const cells = (h.get('p') || '').split(';').map((s) => s.split(',').map(Number))
+  const cellsOf = (key) => (h.get(key) || '').split(';').map((x) => x.split(',').map(Number))
     .filter((c) => c.length === 2 && c.every(Number.isFinite) && Math.abs(c[0]) <= 90 && Math.abs(c[1]) <= 180)
     .slice(0, S.meta.max_points).map(([lat, lon]) => snap(lat, lon));
-  if (!cells.length) return false;
+  const cells = cellsOf('p'), ca = cellsOf('ca');
+  if (!cells.length && !ca.length) return false;
   const y = (h.get('y') || '').split('-').map(Number);
   if (y.length === 2 && y[0] >= S.meta.years[0] && y[1] <= S.meta.years[1] && y[1] - y[0] + 1 >= S.meta.min_years) S.years = y;
   S.picked = new Map(cells.map(([lat, lon]) => [keyOf(lat, lon), [lat, lon]]));
   S.widened = true;
   if (h.get('v') && S.meta.variables[h.get('v')]) { S.variable = h.get('v'); S.userChose = true; S.restoreQ = h.get('q'); }
-  map.fitBounds(L.latLngBounds(cells).pad(0.6), { ...mapPadding(), maxZoom: 8, animate: false });
-  return h.get('s') === 'v' && !!S.variable;
+  if (ca.length && S.variable) {
+    S.cmp = { a: { name: (h.get('cn') || 'Place A').slice(0, 60), cells: ca, var_id: S.variable, years: [...S.years] } };
+    S.restoreCompare = h.get('s') === 'c' && cells.length > 0;
+  }
+  map.fitBounds(L.latLngBounds(cells.concat(ca)).pad(0.6), { ...mapPadding(), maxZoom: 8, animate: false });
+  return h.get('s') === 'v' && !!S.variable && !S.cmp;
 }
 
 function share() {
@@ -1191,9 +1358,12 @@ $('coach').addEventListener('click', (e) => {
 // ---------------------------------------------------------------- events (one delegated listener per kind)
 const ACTIONS = {
   ui: (b) => { S.ui = b.dataset.ui; pref.set('ui', S.ui); renderPanel(); updateHash(); if (S.screen === 'verdict') updateHint(); },
-  back: () => backToPick(),
+  back: () => { if (S.cmp) S.cmp.data = null; backToPick(); },
   new: () => newCase(),
-  go: () => investigate(),
+  go: () => (S.cmp ? runCompare() : investigate()),
+  compare: () => startCompare(),
+  cswap: () => swapCompare(),
+  cend: () => newCase(),
   q: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; renderPanel(); updateHash(); },
   next: (b) => { S.question = b.dataset.q; S.variable = null; S.userChose = true; investigate(); },
   tab: (b) => { S.tab = b.dataset.tab; if (S.tab === 'groups' && !S.groups) loadGroups(); renderPanel(); },
@@ -1442,5 +1612,6 @@ function initPanelResize() {
   setMode('pan');
   if (S.picked.size) selectionChanged(); else { renderPanel(); loadQuestions(); }
   if (reopenVerdict) investigate();
+  else if (S.restoreCompare) runCompare();
   else if (!S.picked.size && pref.get('coach', '') !== 'done') showWelcome();
 })();
