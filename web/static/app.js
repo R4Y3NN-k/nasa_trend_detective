@@ -43,6 +43,26 @@ const GLOSSARY = {
   fdr: 'When many cells are tested at once, some look significant by luck. This correction keeps such false alarms under 10%.',
 };
 
+// Short definitions behind the (!) icons next to each statistic.
+const STATS = {
+  rate: 'Rate per decade: how much the value changes every 10 years, from a straight line fitted through every month of the record (with the usual seasons removed).',
+  status: 'Clearly = both tests agree, with less than a 5% chance of being luck (p < 0.05). Possibly = at least one test below 10% (p < 0.10). No clear change = the ups and downs could be natural variation.',
+  total: 'Total change: the rate per decade multiplied by the length of the record. It is the change along the trend line, not the gap between the first and last year.',
+  decades: 'Each bar is the average difference from usual across one decade. Bars that climb from left to right show a rise; a single tall last bar means most of the change is recent.',
+  seasons: 'The same two tests, run on one season\'s months only. A season can change faster than the year as a whole.',
+  plain: 'A short summary written by an AI model from the numbers this app computed. Every number in it is checked against the app\'s own results.',
+  cross: 'An independent NASA dataset, tested the same way. If two datasets show the same direction, the trend is more believable.',
+  until: 'Years to significance: how many more years of data would be needed for the trend to pass the 5% test, if it keeps the same rate and the same noise.',
+  fit: 'Straight-line fit (t-test): the chance of a slope this steep if there were no trend. Below 0.05 passes. Newey-West errors allow for one month resembling the next.',
+  rank: 'Mann-Kendall rank test: checks whether later months tend to be higher (or lower) than earlier ones. It does not assume a straight line or bell-shaped data.',
+  range: 'We are 95% confident the true rate lies in this range. If the range includes zero, there may be no trend at all.',
+  sen: 'Sen\'s slope: the middle value of the slopes between every pair of months. Unusual months barely move it.',
+  pct: 'The rate per decade as a share of the long-term average, so small and large quantities can be compared.',
+  record: 'The months used. Missing months are left out, not filled in.',
+  cells: 'A land cell is one NASA POWER grid square, about 55 km tall. Sea cells are left out because they describe the ocean, not the land.',
+  compare: 'Each place is compared with its own usual climate. "Faster" is said only when the two 95% ranges do not overlap.',
+};
+
 // ---------------------------------------------------------------- small helpers
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = (id) => document.getElementById(id);
@@ -65,6 +85,13 @@ const ICONS = {
   spin: '<path d="M21 12a9 9 0 1 1-9-9"/>',
   compare: '<path d="M7 4v16M17 4v16"/><path d="M3 8h8M13 16h8"/>', swap: '<path d="M7 7h13l-4-4M17 17H4l4 4"/>',
 };
+const info = (text, label = 'What does this mean?') =>
+  `<button type="button" class="info" data-tip="${esc(text)}" aria-label="${esc(label)}"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.6"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg></button>`;
+const varDef = (vid) => {
+  const v = S.meta && S.meta.variables[vid];
+  return v ? `${v.name}: ${v.definition || ''}${v.units ? ` Unit: ${v.units}.` : ''}` : '';
+};
+const varInfo = (vid) => (S.meta && S.meta.variables[vid] ? info(varDef(vid), `What is ${S.meta.variables[vid].name.toLowerCase()}?`) : '');
 const ic = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
 // Preferences survive a reload when the browser allows storage; the app works the same without it.
@@ -475,7 +502,7 @@ function scanStatus(vid) {
   const s = S.scan && S.scan.status === 'ok' && S.scan.sig === scanSig() ? S.scan.data.find((x) => x.var_id === vid) : null;
   if (!s) return S.scan && S.scan.status === 'loading' ? '<span class="skel w40" style="margin-top:6px"></span>' : '';
   const st = statusOf(s.tier, s.direction === 'falling' ? -1 : 1);
-  return `<span class="status ${st.cls}">${ic(st.icon, 's')}${st.words}<span class="rate num">· ${esc(s.rate_per_decade)} per decade</span></span>`;
+  return `<span class="status ${st.cls}">${ic(st.icon, 's')}${st.words}<span class="rate num">· ${esc(s.rate_per_decade)} per decade</span> <span class="info inline" data-tip="${esc(`Quick check: ${STATS.status} ${STATS.rate}`)}" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg></span></span>`;
 }
 
 function chosenVars() {
@@ -525,7 +552,7 @@ function areaHtml() {
   const climate = S.climate ? `<p class="t-body"><strong>${esc(S.climate.label)}</strong>: ${esc(S.climate.reason)}.</p>` : '';
   const legend = ramp.n > 1 && !loading ? `<div class="stack tight no-print">
       <div class="ramp" style="background:linear-gradient(90deg, rgb(${ramp.lo.join(',')}), rgb(${ramp.hi.join(',')}))"></div>
-      <div class="ends"><span>${esc(valueText(ramp.var, ramp.min))}</span><span>dot colour: average ${esc(info.name.toLowerCase())}</span><span>${esc(valueText(ramp.var, ramp.max))}</span></div></div>` : '';
+      <div class="ends"><span>${esc(valueText(ramp.var, ramp.min))}</span><span>dot colour: average ${esc(info.name.toLowerCase())} ${varInfo(ramp.var)}</span><span>${esc(valueText(ramp.var, ramp.max))}</span></div></div>` : '';
   const allSea = !loading && !c.land && c.sea ? '<p class="note">These cells are all sea. Move the loop over land.</p>' : '';
   return `<div id="sec-area" class="stack">
     <p class="t-cap" aria-live="polite">${counts}</p>
@@ -569,7 +596,7 @@ function renderPick() {
   const rows = S.questions.map((q) => {
     const sel = !S.variable && S.question === q.id;
     return `<button type="button" class="q" data-act="q" data-q="${esc(q.id)}" aria-pressed="${sel}">
-      <span class="dot"></span><b>${esc(q.label)}</b><small>${esc(q.vars)}</small>${scanStatus(q.primary)}</button>`;
+      <span class="dot"></span><b>${esc(q.label)}</b><small>${esc(q.vars)} <span class="info inline" data-tip="${esc(varDef(q.primary))}" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg></span></small>${scanStatus(q.primary)}</button>`;
   }).join('');
   const options = Object.entries(S.meta.variables).map(([id, v]) => `<option value="${esc(id)}" ${S.variable === id ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
   $('panel-body').innerHTML = `<div class="screen">
@@ -580,7 +607,7 @@ function renderPick() {
     <div class="stack">
       <div class="qlist">${rows || '<div class="stack" style="padding:14px 0"><span class="skel w80"></span><span class="skel w60"></span></div>'}</div>
       <div class="field"><label for="var">Or one variable</label>
-        <select id="var" class="sel grow" data-change="var"><option value="">Choose…</option>${options}</select></div>
+        <select id="var" class="sel grow" data-change="var"><option value="">Choose…</option>${options}</select>${S.variable ? varInfo(S.variable) : info(Object.values(S.meta.variables).map((x) => `${x.name}: ${x.definition || ''}`).join(' '), 'What do the variables mean?')}</div>
       <div class="field"><label for="y0">Years</label>
         <select id="y0" class="sel" data-change="y0" aria-label="First year">${yearOptions(y0, first, last - S.meta.min_years + 1)}</select>
         <span class="t-cap">to</span>
@@ -720,7 +747,7 @@ function explainHtml() {
   const E = S.explain;
   if (E && E.status === 'error') return '<section id="sec-explain"></section>';
   if (!E || E.status === 'loading') {
-    return `<section id="sec-explain" class="stack" aria-live="polite"><h2 class="t-title">In plain words</h2>
+    return `<section id="sec-explain" class="stack" aria-live="polite"><h2 class="t-title">In plain words ${info(STATS.plain)}</h2>
       <span class="skel"></span><span class="skel w80"></span><span class="skel w60"></span></section>`;
   }
   const D = E.data;
@@ -729,7 +756,7 @@ function explainHtml() {
     : 'Written by the app from its own results.';
   const next = (D.next || []).slice(0, 3).map((q) => `<li><button type="button" class="link" data-act="next" data-q="${esc(q.id)}">${esc(q.label)}${ic('next', 's')}</button></li>`).join('');
   return `<section id="sec-explain" class="stack" aria-live="polite">
-    <h2 class="t-title">In plain words</h2>
+    <h2 class="t-title">In plain words ${info(STATS.plain)}</h2>
     <p class="t-body" style="color:var(--ink)">${esc(D.summary)}</p>
     <p class="t-cap">${by}</p>
     ${next ? `<div class="stack tight no-print" style="padding-top:4px"><h3 class="t-cap" style="font-weight:600;color:var(--char)">Investigate next, same area</h3><ul class="stack tight">${next}</ul></div>` : ''}
@@ -764,7 +791,7 @@ function decadesHtml() {
   const partial = last.last_year - last.first_year + 1 < 10
     ? ` The last bar covers only ${last.last_year - last.first_year + 1} years (${last.first_year} to ${last.last_year}).` : '';
   return `<section class="stack">
-    <div class="stack tight"><h2 class="t-title">Decade by decade</h2>
+    <div class="stack tight"><h2 class="t-title">Decade by decade ${info(STATS.decades)}</h2>
       <p class="t-cap">Average ${term('anomaly', 'difference from usual')} in each decade, in ${esc(v.units || 'units')}. Zero is the ${R.years[0]} to ${R.years[1]} average.${partial}</p></div>
     <div class="bars" role="group" aria-label="Average anomaly per decade">${bars}</div>
   </section>`;
@@ -775,7 +802,7 @@ function untilHtml() {
   if (r.tier === 'significant' || yts === null || yts === undefined || yts > 50) return '';
   const span = r.span_years, year = Math.round(S.result.years[1] + yts);
   return `<section class="stack tight">
-    <p class="t-body">Not settled yet: if this rate continued, about <strong class="num">${Math.round(yts)} more years</strong> of data would be needed to be sure, around ${year}.</p>
+    <p class="t-body">Not settled yet: if this rate continued, about <strong class="num">${Math.round(yts)} more years</strong> of data would be needed to be sure, around ${year}. ${info(STATS.until)}</p>
     <div class="until" role="img" aria-label="${Math.round(span)} years of data so far, about ${Math.round(yts)} more needed"><i style="width:${Math.round(100 * span / (span + yts))}%"></i></div>
     <div class="ends"><span>${S.result.years[0]}</span><span>${S.result.years[1]} · today</span><span>about ${year}</span></div>
   </section>`;
@@ -802,7 +829,7 @@ function crossHtml() {
     : look === 'disagree' ? `<span class="status" style="color:var(--amber)">${ic('info')}${esc(D.headline)}</span>`
       : `<span class="status flat">${ic('layers')}${esc(D.headline)}</span>`;
   const rows = D.sources.map((s) => `<dt>${esc(s.label)}</dt><dd>${fmt(s.slope_decade, d)} ${esc(u)}<small> per decade · ${esc(statusOf(s.tier, s.slope_decade).words.toLowerCase())}${expert && s.ci_decade ? `<br>95% range ${fmt(s.ci_decade[0], d)} to ${fmt(s.ci_decade[1], d)}` : ''}</small></dd>`).join('');
-  return open(`${head}
+  return open(`<div class="row tight" style="gap:6px">${head}${info(STATS.cross, 'What is the second dataset?')}</div>
     <details class="more" ${expert ? 'open' : ''}><summary>${ic('chev', 's')}How do we know?</summary><div class="inside">
       <p class="t-body">${esc(D.detail)}</p>
       <dl class="kv">${rows}</dl>
@@ -818,7 +845,7 @@ function elevationHtml() {
   const v = S.result.variable, d = v.decimals ?? 2, u = v.units || '';
   const row = (name, g) => `<dt>${name}: ${plural(g.points, 'cell')}, about ${g.mean_elevation_m} m</dt><dd>${fmt(g.slope_decade, d)} ${esc(u)}<small> per decade · ${esc(statusOf(g.tier, g.slope_decade).words.toLowerCase())}</small></dd>`;
   return `<section class="stack tight">
-    <span class="status flat">${ic('hill')}Uplands and lowlands</span>
+    <div class="row tight" style="gap:6px"><span class="status flat">${ic('hill')}Uplands and lowlands</span>${info('The cells are split into higher and lower halves by their elevation, and each half is tested on its own. "Faster" is said only when the two 95% ranges do not overlap.')}</div>
     <p class="t-body">${esc(E.sentence)}</p>
     ${S.ui === 'expert' ? `<dl class="kv">${row('Higher', E.high)}${row('Lower', E.low)}</dl>
       <p class="t-cap">Cells range from ${E.range_m[0]} m to ${E.range_m[1]} m, split at ${E.cut_m} m (NASA POWER cell elevation).</p>` : ''}
@@ -828,7 +855,7 @@ function elevationHtml() {
 function seasonsHtml() {
   const Z = S.seasons, open = (inner) => `<section id="sec-seasons" class="stack">${inner}</section>`;
   if (!Z || Z.status === 'error') return open('');
-  const title = '<h2 class="t-title">Season by season</h2>';
+  const title = `<h2 class="t-title">Season by season ${info(STATS.seasons)}</h2>`;
   if (Z.status === 'loading') return open(`${title}<span class="skel"></span><span class="skel w80"></span>`);
   const rows = Z.data.seasons.filter((s) => s.slope_decade !== null);
   if (rows.length < 2) return open('');
@@ -856,21 +883,21 @@ function testsHtml() {
   return `<section class="stack">
     <h2 class="t-title">The tests</h2>
     <table class="tests"><thead><tr><th>Test</th><th class="n">p-value</th><th class="n">At 5%</th></tr></thead><tbody>
-      <tr><td>Straight-line fit<small>OLS on monthly anomalies, Newey-West errors (12-month lag)</small></td><td class="n">${fmtP(r.p_ttest)}</td><td class="n">${res(r.p_ttest)}</td></tr>
-      <tr><td>Rank test<small>Mann-Kendall, Hamed-Rao correction for autocorrelation</small></td><td class="n">${fmtP(r.p_mk)}</td><td class="n">${res(r.p_mk)}</td></tr>
+      <tr><td>Straight-line fit ${info(STATS.fit)}<small>OLS on monthly anomalies, Newey-West errors (12-month lag)</small></td><td class="n">${fmtP(r.p_ttest)}</td><td class="n">${res(r.p_ttest)}</td></tr>
+      <tr><td>Rank test ${info(STATS.rank)}<small>Mann-Kendall, Hamed-Rao correction for autocorrelation</small></td><td class="n">${fmtP(r.p_mk)}</td><td class="n">${res(r.p_mk)}</td></tr>
     </tbody></table>
     <div class="stack tight">
-      <div class="row between" style="font-size:13.5px"><span>${term('range', '95% range')} of the rate</span><strong class="num">${fmt(lo, d)} to ${fmt(hi, d)} ${esc(u)} per decade</strong></div>
+      <div class="row between" style="font-size:13.5px"><span>95% range of the rate ${info(STATS.range)}</span><strong class="num">${fmt(lo, d)} to ${fmt(hi, d)} ${esc(u)} per decade</strong></div>
       <div class="range"><span class="band ${up}" style="left:${pos(lo)}%;width:${pos(hi) - pos(lo)}%"></span><span class="zero" style="left:calc(${pos(0)}% - 1px)"></span><span class="est ${up}" style="left:calc(${pos(r.slope_decade)}% - 2px)"></span></div>
       <div class="ends"><span>${fmt(-m, d)}</span><span>0</span><span>${fmt(m, d)}</span></div>
     </div>
     <dl class="kv">
-      <dt>Rate (straight-line fit)</dt><dd>${fmt(r.slope_decade, d)} ${esc(u)}<small> per decade</small></dd>
-      <dt>Sen's slope (robust rate)</dt><dd>${fmt(r.sen_decade, d)} ${esc(u)}<small> per decade</small></dd>
-      ${r.pct_decade !== null && r.pct_decade !== undefined ? `<dt>Share of the average</dt><dd>${fmt(r.pct_decade, 1)}%<small> per decade</small></dd>` : ''}
-      <dt>Record</dt><dd>${esc(r.start)} to ${esc(r.end)}<small> · ${r.n_months} months, ${r.missing_months} missing</small></dd>
-      <dt>Cells averaged</dt><dd>${R.points_used} land<small> of ${R.points.length} picked</small></dd>
-      ${r.tier !== 'significant' && r.years_to_significance !== null && r.years_to_significance <= 50 ? `<dt>More data needed at this rate</dt><dd>about ${Math.round(r.years_to_significance)} years</dd>` : ''}
+      <dt>Rate (straight-line fit) ${info(STATS.rate)}</dt><dd>${fmt(r.slope_decade, d)} ${esc(u)}<small> per decade</small></dd>
+      <dt>Sen's slope (robust rate) ${info(STATS.sen)}</dt><dd>${fmt(r.sen_decade, d)} ${esc(u)}<small> per decade</small></dd>
+      ${r.pct_decade !== null && r.pct_decade !== undefined ? `<dt>Share of the average ${info(STATS.pct)}</dt><dd>${fmt(r.pct_decade, 1)}%<small> per decade</small></dd>` : ''}
+      <dt>Record ${info(STATS.record)}</dt><dd>${esc(r.start)} to ${esc(r.end)}<small> · ${r.n_months} months, ${r.missing_months} missing</small></dd>
+      <dt>Cells averaged ${info(STATS.cells)}</dt><dd>${R.points_used} land<small> of ${R.points.length} picked</small></dd>
+      ${r.tier !== 'significant' && r.years_to_significance !== null && r.years_to_significance <= 50 ? `<dt>More data needed at this rate ${info(STATS.until)}</dt><dd>about ${Math.round(r.years_to_significance)} years</dd>` : ''}
     </dl>
   </section>`;
 }
@@ -952,10 +979,10 @@ function renderVerdict() {
   $('panel-body').innerHTML = `<div class="screen">
     <div class="print-only"><strong>Trend Detective case report</strong> · ${today} · ${plural(R.points_used, 'NASA POWER land cell')} · ${R.years[0]} to ${R.years[1]}</div>
     <div class="stack">
-      <p class="t-q">${esc(questionTitle())}</p>
-      <h1 class="t-display">${esc(R.words.headline)}</h1>
-      <span class="status big ${st.cls}">${ic(st.icon)}${st.words}</span>
-      <p class="t-body">${change}</p>
+      <p class="t-q">${esc(questionTitle())} ${varInfo(R.var_id)}</p>
+      <h1 class="t-display">${esc(R.words.headline)} ${info(STATS.rate, 'What is the rate per decade?')}</h1>
+      <div class="row tight" style="gap:6px"><span class="status big ${st.cls}">${ic(st.icon)}${st.words}</span>${info(STATS.status, 'What does this status mean?')}</div>
+      <p class="t-body">${change}${r.tier !== 'none' && total !== null && total !== undefined ? ` ${info(STATS.total, 'What is the total change?')}` : ''}</p>
       ${R.recent ? `<p class="t-body recent">${ic('info', 's')}${esc(R.recent.text)}</p>` : ''}
       <p class="t-cap">This shows a change, not its cause. ${plural(R.points_used, 'land cell')}, ${R.years[0]} to ${R.years[1]}.</p>
     </div>
@@ -1150,8 +1177,8 @@ function cmpCard(k, side, v) {
   return `<div class="cmp-card stack tight">
     <p class="t-cap"><span class="legend-sw cmp-${k}"></span><strong>${k.toUpperCase()}: ${esc(side.name)}</strong></p>
     <p><span class="t-title num">${fmt(r.slope_decade, d)}</span> <span class="t-cap">${esc(u)} ${term('decade', 'per decade')}</span></p>
-    <span class="status ${st.cls}">${ic(st.icon)}${st.words}</span>
-    ${S.ui === 'expert' ? `<p class="t-cap num">95% ${term('range', 'range')}: ${range}<br>p = ${fmtP(r.p_ttest)} (fit), ${fmtP(r.p_mk)} (rank) · ${plural(side.points_used, 'land cell')}</p>`
+    <span class="status ${st.cls}">${ic(st.icon)}${st.words} ${info(STATS.status, 'What does this status mean?')}</span>
+    ${S.ui === 'expert' ? `<p class="t-cap num">95% range ${info(STATS.range)}: ${range}<br>p = ${fmtP(r.p_ttest)} (fit), ${fmtP(r.p_mk)} (rank) · ${plural(side.points_used, 'land cell')}</p>`
       : `<p class="t-cap">${plural(side.points_used, 'land cell')}</p>`}
   </div>`;
 }
@@ -1160,8 +1187,8 @@ function renderCompare() {
   const D = S.cmp.data, v = D.variable;
   $('panel-body').innerHTML = `<div class="screen">
     <div class="stack">
-      <p class="t-q">${esc(v.name)}: ${esc(D.a.name)} and ${esc(D.b.name)}, ${D.years[0]} to ${D.years[1]}</p>
-      <h1 class="t-lead">${esc(D.sentence)}</h1>
+      <p class="t-q">${esc(v.name)}: ${esc(D.a.name)} and ${esc(D.b.name)}, ${D.years[0]} to ${D.years[1]} ${varInfo(D.var_id)}</p>
+      <h1 class="t-lead">${esc(D.sentence)} ${info(STATS.compare, 'How are the places compared?')}</h1>
       <div class="cmp-cards">${cmpCard('a', D.a, v)}${cmpCard('b', D.b, v)}</div>
       <p class="t-cap">Each place is measured against its own usual climate, so a cold and a hot place can be compared. "Faster" is said only when the two 95% ranges do not overlap. This shows a change, not its cause.</p>
     </div>
@@ -1374,6 +1401,7 @@ const ACTIONS = {
   share: () => share(),
 };
 $('panel').addEventListener('click', (e) => {
+  if (e.target.closest('.info')) return;
   const b = e.target.closest('[data-act]');
   if (!b || b.disabled) return;
   const menu = b.closest('details.menu');
@@ -1614,4 +1642,35 @@ function initPanelResize() {
   if (reopenVerdict) investigate();
   else if (S.restoreCompare) runCompare();
   else if (!S.picked.size && pref.get('coach', '') !== 'done') showWelcome();
+})();
+
+// ---------------------------------------------------------------- (!) definitions: hover, focus or tap
+(function infoTips() {
+  const tip = document.createElement('div');
+  tip.id = 'tip'; tip.setAttribute('role', 'tooltip'); tip.hidden = true;
+  document.body.appendChild(tip);
+  let owner = null;
+  const show = (el) => {
+    owner = el;
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const r = el.getBoundingClientRect(), w = Math.min(280, window.innerWidth - 16);
+    tip.style.width = w + 'px';
+    const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+    const h = tip.offsetHeight, above = r.top - h - 8;
+    tip.style.left = left + 'px';
+    tip.style.top = (above > 8 ? above : r.bottom + 8) + 'px';
+  };
+  const hide = () => { owner = null; tip.hidden = true; };
+  document.addEventListener('pointerover', (e) => { const el = e.target.closest && e.target.closest('.info'); if (el && e.pointerType === 'mouse') show(el); });
+  document.addEventListener('pointerout', (e) => { const el = e.target.closest && e.target.closest('.info'); if (el && e.pointerType === 'mouse' && !el.contains(e.relatedTarget)) hide(); });
+  document.addEventListener('focusin', (e) => { if (e.target.classList && e.target.classList.contains('info')) show(e.target); });
+  document.addEventListener('focusout', (e) => { if (e.target === owner) hide(); });
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest && e.target.closest('.info');
+    if (el) { e.preventDefault(); e.stopPropagation(); if (owner === el && !tip.hidden) hide(); else show(el); }
+    else if (owner) hide();
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  document.addEventListener('scroll', hide, true);
 })();
