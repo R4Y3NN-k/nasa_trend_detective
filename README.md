@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/R4Y3NN-k/nasa_trend_detective/aziz/docs/img/verdict.jpg" alt="Trend Detective: is the climate changing where you live? Checked twice against NASA data." width="100%">
+  <img src="docs/img/verdict.webp" alt="Trend Detective: verdict for an area south of Tunis, hottest temperature of the month rising about 0.39 °C per decade" width="100%">
 </p>
 
 <p align="center">
@@ -29,13 +29,55 @@ The tests live in [`td/analyze.py`](td/analyze.py) and the checks live in the te
 
 **NASA Space Apps Challenge 2026 — *Be An Earth System Trend Detective*.**
 
-## Demo
+## A case, step by step
+
+### 1. Start
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/R4Y3NN-k/nasa_trend_detective/aziz/docs/img/cross-check.jpg" alt="Cross-check: MERRA-2 and AIRS agree that Tunis is warming" width="100%">
+  <img src="docs/img/home.webp" alt="Home screen: the map and the dashboard with Watch an example and Use my location" width="100%">
 </p>
 
-<p align="center"><sub>MERRA-2 reanalysis and the AIRS satellite over Tunis, 2002–2025: two independent sources, the same warming (<i>r</i> = 0.86). The year-by-year chart is in the panel after every verdict, when Earthdata credentials are set.</sub></p>
+<p align="center"><sub>The map on the left, the dashboard on the right. <b>Watch an example</b> plays a full case by itself; <b>Use my location</b> selects the land around you; or draw a loop with the pen tool (or Shift + drag).</sub></p>
+
+### 2. Choose a question that fits the place
+
+<p align="center">
+  <img src="docs/img/pick.webp" alt="Question screen: 11 land cells, desert climate, questions with a preview of each trend" width="100%">
+</p>
+
+<p align="center"><sub>The selected area is read as a <b>desert climate</b> from its own NASA averages (about 126 mm of rain a year, 20.3 °C), so the questions are about extreme heat and drying soil. Each one shows a preview of its trend before you commit. The dots on the map are coloured by the average hottest temperature of the month.</sub></p>
+
+### 3. Read the verdict
+
+<p align="center">
+  <img src="docs/img/verdict.webp" alt="Verdict: hottest temperature of the month rising about 0.39 °C per decade, clearly rising, decade bars" width="100%">
+</p>
+
+<p align="center"><sub>One sentence, one tier (<b>Clearly rising</b>), the change over 45 years (+1.74 °C) and the decade bars. Every cell with a clear trend of its own gets a dot on the map. Every (!) opens a one-line definition.</sub></p>
+
+### 4. Plain words, next questions and the seasons
+
+<p align="center">
+  <img src="docs/img/plain-words.webp" alt="Plain-words summary written by Gemini, suggested next questions, and the season-by-season breakdown" width="100%">
+</p>
+
+<p align="center"><sub>A short summary written by Google Gemini from the app's own numbers and checked to contain no others, the next questions for the same area, and the season-by-season test. Spring changes most here, but the seasons' 95 % ranges overlap, so the app does not call it faster.</sub></p>
+
+### 5. Groups (Expert)
+
+<p align="center">
+  <img src="docs/img/groups.png" alt="Groups tab: four groups of cells with similar trends in air temperature, rain and snow, and topsoil wetness" width="100%">
+</p>
+
+<p align="center"><sub>Each cell is tested on its own for air temperature, rain and snow, and topsoil wetness. Cells whose trends look alike share a colour on the map and in the list, with a flat or 3-D view.</sub></p>
+
+### 6. Compare two places
+
+<p align="center">
+  <img src="docs/img/compare.webp" alt="Comparison of root-zone soil wetness near Tataouine and a second area in the Algerian Sahara" width="100%">
+</p>
+
+<p align="center"><sub>The same variable over the same years for a second area. Each place is measured against its own usual climate, so a cold and a hot place can be compared. <i>Faster</i> is said only when the two 95 % ranges do not overlap; here the difference is within the uncertainty.</sub></p>
 
 ## How a verdict is decided
 
@@ -46,10 +88,6 @@ The tests live in [`td/analyze.py`](td/analyze.py) and the checks live in the te
 | **No clear trend** | Neither test clears, or the confidence interval includes zero | A plain statement that 45 years are not enough to see a change in this variable here, and the cross-check for comparison |
 
 A decade-by-decade decomposition and a season-by-season decomposition are run alongside; a season is only called *fastest* when its 95 % confidence interval clears every other season's. When the selected area spans ≥ 500 m of elevation, uplands and lowlands are tested separately; *faster* is only reported when the two intervals do not overlap.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/R4Y3NN-k/nasa_trend_detective/aziz/docs/img/groups-3d.jpg" alt="Trend groups: cells that change alike share a colour on the map and in the 3-D view" width="100%">
-</p>
 
 ## The pieces
 
