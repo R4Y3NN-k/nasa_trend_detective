@@ -38,6 +38,9 @@ ul, ol { padding: 0; list-style: none; }
 #map { position: absolute; inset: 0; }
 .leaflet-container { font-family: inherit; background: var(--sea); }
 #map.drawing, #map.drawing .leaflet-interactive { cursor: crosshair; }
+/* Pen tool on touch screens: Leaflet gives the finger back to the browser when map dragging is off, and the
+   browser then cancels the loop as a scroll. This keeps the finger on the map while drawing. */
+#map.drawing { touch-action: none; }
 .leaflet-touch .leaflet-bar, .leaflet-bar { border: 1px solid var(--line-strong); border-radius: var(--r-s); box-shadow: var(--shadow-s); }
 .leaflet-control-zoom a { width: 44px !important; height: 44px !important; line-height: 44px !important; font-size: 20px !important; color: var(--ink) !important; }
 .leaflet-tooltip { font-size: 12.5px; line-height: 1.45; color: var(--ink); border: 1px solid var(--line-strong); border-radius: var(--r-s); box-shadow: var(--shadow-s); padding: 6px 9px; }
@@ -276,6 +279,10 @@ details.menu .items button:hover { background: var(--teal-s); }
   .t-display { font-size: 23px; }
   .bars { height: 150px; gap: 6px; }
   .leaflet-bottom.leaflet-right { bottom: calc(54vh + 8px); }
+  /* While the pen or pick tool is on, the sheet folds to its header and button so the map gets the screen. */
+  body.map-tool .panel { height: auto; }
+  body.map-tool .panel-body { display: none; }
+  body.map-tool .leaflet-bottom.leaflet-right { bottom: 150px; }
 }
 
 /* ------------------------------------------------------------ welcome overlay */
