@@ -137,6 +137,7 @@ const pointsLayer = L.layerGroup().addTo(map);
 const zonesLayer = L.layerGroup().addTo(map);
 const cmpLayer = L.layerGroup().addTo(map);
 let lasso = null;
+let pickStride = 1;           // 1 = every cell is drawn, so a tap can pick any of them
 const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const phone = () => window.innerWidth <= 820;
 const mapPadding = () => (phone() ? { paddingTopLeft: [60, 70], paddingBottomRight: [20, Math.round(window.innerHeight * 0.56)] }
@@ -146,6 +147,7 @@ function setMode(mode) {
   S.mode = mode;
   const drawing = mode === 'draw';
   map.getContainer().classList.toggle('drawing', drawing);
+  document.body.classList.toggle('map-tool', mode !== 'pan');   // phones: the bottom sheet folds away (app.css)
   if (drawing) map.dragging.disable(); else map.dragging.enable();
   for (const [id, on] of [['tool-pan', mode === 'pan'], ['tool-draw', drawing], ['tool-points', mode === 'points']]) $(id).setAttribute('aria-pressed', String(on));
   updateHint();
@@ -183,12 +185,13 @@ function flash(msg) {
 function renderPoints() {
   pointsLayer.clearLayers();
   if (S.screen === 'compare') return;
-  const cap = S.meta ? S.meta.max_points : 30;
   const show = new Map(S.picked);
+  pickStride = 1;
   if (S.mode === 'points' && S.screen === 'pick') {
     const b = map.getBounds();
     let stride = 1, cells;
     do { cells = cellsIn(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), stride); stride++; } while (cells.length > 700);
+    pickStride = stride - 1;
     for (const [lat, lon] of cells) if (!show.has(keyOf(lat, lon))) show.set(keyOf(lat, lon), [lat, lon]);
   }
   const ramp = rampFor();
@@ -207,42 +210,49 @@ function renderPoints() {
     }
     const m = L.circleMarker([lat, lon], { ...style, interactive: on || (S.mode === 'points' && S.screen === 'pick') });
     m.bindTooltip(on ? pointTooltip(lat, lon, d, key) : `${lat.toFixed(2)}°, ${lon.toFixed(2)}° · tap to add`, { direction: 'top' });
-    m.on('click', () => {
-      if (S.mode !== 'points' || S.screen !== 'pick') return;
-      if (!S.picked.has(key) && S.picked.size >= cap) { flash(`At most ${cap} cells: NASA POWER is asked once per cell.`); return; }
-      pushHistory();
-      if (S.picked.has(key)) { S.picked.delete(key); S.added.delete(key); } else S.picked.set(key, [lat, lon]);
-      if (lasso) { lasso.remove(); lasso = null; }
-      S.note = null; S.capped = false;
-      selectionChanged();
-    });
     m.addTo(pointsLayer);
   }
 }
 
+// Picking cells: a tap or click anywhere inside a cell's square toggles that cell, so a finger does not have to
+// land on the small dot. Clicks on the dots bubble up to the map and arrive here too.
+map.on('click', (e) => {
+  if (S.mode !== 'points' || S.screen !== 'pick') return;
+  if (pickStride > 1) { flash('Zoom in to pick single cells.'); return; }
+  const [lat, lon] = G.snap(e.latlng.lat, e.latlng.lng), key = keyOf(lat, lon);
+  const cap = S.meta ? S.meta.max_points : 30;
+  if (!S.picked.has(key) && S.picked.size >= cap) { flash(`At most ${cap} cells: NASA POWER is asked once per cell.`); return; }
+  pushHistory();
+  if (S.picked.has(key)) { S.picked.delete(key); S.added.delete(key); } else S.picked.set(key, [lat, lon]);
+  if (lasso) { lasso.remove(); lasso = null; }
+  S.note = null; S.capped = false;
+  selectionChanged();
+});
+
 // Freehand lasso on the map container: pen tool, or Shift + drag from any tool.
 (function setupLasso() {
   const el = map.getContainer();
-  let drawing = false, path = [], line = null;
+  let drawing = false, path = [], line = null, finger = null;
   el.addEventListener('pointerdown', (e) => {
+    if (drawing && e.pointerId !== finger) { window.cancelLasso(); return; }   // a second finger: a pinch, not a loop
     if ((S.mode !== 'draw' && !e.shiftKey) || S.screen !== 'pick' || e.button !== 0) return;
     if (e.target.closest('.leaflet-control')) return;
     if (S.mode !== 'draw') map.dragging.disable();
-    drawing = true;
+    drawing = true; finger = e.pointerId;
     path = [map.mouseEventToLatLng(e)];
     line = L.polyline(path, { color: '#046460', weight: 3, dashArray: '8 6', interactive: false }).addTo(map);
     try { el.setPointerCapture(e.pointerId); } catch (_) { /* pen/synthetic pointers: drawing still works */ }
     e.preventDefault();
   });
   el.addEventListener('pointermove', (e) => {
-    if (!drawing) return;
+    if (!drawing || e.pointerId !== finger) return;
     const ll = map.mouseEventToLatLng(e);
     if (map.latLngToContainerPoint(path[path.length - 1]).distanceTo(map.latLngToContainerPoint(ll)) < 4) return;
     path.push(ll);
     line.setLatLngs(path);
   });
-  const finish = () => {
-    if (!drawing) return;
+  const finish = (e) => {
+    if (!drawing || e.pointerId !== finger) return;
     drawing = false;
     line.remove();
     if (S.mode !== 'draw') map.dragging.enable();
@@ -254,7 +264,11 @@ function renderPoints() {
   };
   el.addEventListener('pointerup', finish);
   el.addEventListener('pointercancel', finish);
-  window.cancelLasso = () => { if (drawing) { drawing = false; line.remove(); } };
+  window.cancelLasso = () => {
+    if (!drawing) return;
+    drawing = false; line.remove();
+    if (S.mode !== 'draw') map.dragging.enable();
+  };
 })();
 
 function setLasso(latlngs) {
@@ -660,6 +674,7 @@ function syncGo() {
 async function investigate() {
   const { primary, linked, why } = chosenVars();
   if (!primary) return;
+  if (S.mode !== 'pan') setMode('pan');      // the map tools only work while picking; also unfolds the phone sheet
   S.screen = 'loading'; S.error = null; S.cross = null; S.explain = null; S.seasons = null; S.groups = null; S.mapGroups = false;
   zonesLayer.clearLayers();
   renderPanel(); renderPoints();
@@ -1139,6 +1154,7 @@ function startCompare() {
 async function runCompare() {
   const A = S.cmp.a, cells = [...S.picked.values()];
   if (!cells.length) return;
+  if (S.mode !== 'pan') setMode('pan');
   S.cmp.b = { name: placeName(cells), cells };
   if (S.cmp.b.name === A.name) S.cmp.b.name += ' (B)';
   S.cmp.data = null; S.error = null; S.screen = 'loading'; S.result = null;
